@@ -25,3 +25,22 @@ def test_real_clojure_graph(tmp_path):
     impact = tools.affected("demo.db/connect")
     assert "src/demo/core.clj" in impact.files
     assert tools.shortest_path("demo.core/run", "demo.db/query").found
+
+
+def test_real_graph_links_imports_and_test_redefs(tmp_path):
+    # Fixed in graphify v0.9.84-blockether.2: shared requires reach the real
+    # namespace node, and with-redefs targets count as dependents.
+    src = tmp_path / "src" / "demo"
+    src.mkdir(parents=True)
+    (src / "db.clj").write_text("(ns demo.db)\n\n(defn connect [url] {:url url})\n")
+    for name in ("a", "b"):
+        (src / f"{name}.clj").write_text(
+            f"(ns demo.{name}\n  (:require [demo.db :as db]))\n\n"
+            f"(defn t-{name} []\n  (with-redefs [db/connect (constantly nil)] 1))\n"
+        )
+    tools = GraphifyTools(workspace_root=lambda: str(tmp_path))
+    tools.build(cluster=False, timeout_s=600)
+    namespace = tools.explain("demo.db")
+    assert namespace.node.kind == "namespace"
+    assert {e.relation for e in namespace.incoming} >= {"imports"}
+    assert tools.affected("demo.db/connect").files == ("src/demo/a.clj", "src/demo/b.clj")
