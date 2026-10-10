@@ -5,6 +5,7 @@ This module is plain Python. `extension.py` binds it to Vis.
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -132,6 +133,48 @@ class QueryAnswer:
     text: Annotated[str, "NODE and EDGE lines that graphify selected."]
 
 
+@dataclass(frozen=True)
+class DomainFinding:
+    """One problem or note that a domain check reported."""
+
+    severity: Annotated[str, "error, warning or info."]
+    code: Annotated[str, "Check name, such as `missing-command` or `event-not-applied`."]
+    message: Annotated[str, "What is wrong, in one sentence."]
+    file: Annotated[str, "Source file, relative to the project root, or empty."]
+    line: Annotated[int | None, "1-based line, if known."]
+    element: Annotated[str, "The element as `kind:service:name`, or empty."]
+    plugin: Annotated[str, "The plugin that reported it."]
+
+
+@dataclass(frozen=True)
+class DomainReport:
+    """The domain model of a project: elements, links, schemas and findings."""
+
+    root: Annotated[str, "Absolute project root."]
+    markdown_path: Annotated[str, "DOMAIN.md with diagrams, flows and schemas, or empty if no plugin applies."]
+    json_path: Annotated[str, "domain.json with the full model, or empty."]
+    plugins: Annotated[tuple[str, ...], "Plugins that ran. Empty when no plugin applies."]
+    services: Annotated[tuple[str, ...], "Services and client namespaces."]
+    counts: Annotated[dict[str, int], "Element count for each kind, such as `command` or `event`."]
+    relations: Annotated[int, "Count of links: emits, reads, invokes, triggers, ..."]
+    schemas: Annotated[int, "Count of JSON Schemas converted from Malli."]
+    errors: Annotated[int, "Count of error findings, such as calls to missing commands."]
+    warnings: Annotated[int, "Count of warning findings."]
+    notes: Annotated[int, "Count of info findings."]
+    findings: Annotated[tuple[DomainFinding, ...], "Findings, errors first."]
+    plugin_errors: Annotated[tuple[str, ...], "Plugins that failed to load or run."]
+    truncated: Annotated[bool, "True when `limit` cut the findings."]
+
+
+@dataclass(frozen=True)
+class PluginInfo:
+    """One domain plugin that graphify can load."""
+
+    name: Annotated[str, "Plugin name; pass it in `plugins`."]
+    description: Annotated[str, "What the plugin reads, or the load error."]
+    module: Annotated[str, "Python module of the plugin; empty for a load error."]
+
+
 def _line(location: str) -> int | None:
     digits = location.lstrip("Ll").split(":")[0].split("-")[0]
     return int(digits) if digits.isdigit() else None
@@ -192,6 +235,20 @@ def _tail(text: str, lines: int = 40) -> str:
     return "\n".join(text.strip().splitlines()[-lines:])
 
 
+BUNDLED_PLUGINS = Path(__file__).resolve().parent / "domain_plugins"
+"""Domain plugins that ship with this extension. graphify loads every `*.py` file here."""
+
+
+def _plugin_env(plugins: tuple[str, ...] | list[str] = ()) -> dict[str, str]:
+    """The child environment with the bundled plugins and `plugins` in `GRAPHIFY_PLUGINS`."""
+    env = _child_env()
+    specs = [str(BUNDLED_PLUGINS), *plugins]
+    if env.get("GRAPHIFY_PLUGINS"):
+        specs.append(env["GRAPHIFY_PLUGINS"])
+    env["GRAPHIFY_PLUGINS"] = os.pathsep.join(specs)
+    return env
+
+
 Runner = Callable[..., subprocess.CompletedProcess]
 
 
@@ -211,18 +268,28 @@ class GraphifyTools:
             raise NotADirectoryError(f"Project root {path} is not a directory.")
         return path
 
-    def build(self, root: str = ".", force: bool = False, cluster: bool = True, timeout_s: int = 1800) -> BuildResult:
+    def build(
+        self,
+        root: str = ".",
+        force: bool = False,
+        cluster: bool = True,
+        timeout_s: int = 1800,
+        plugins: list[str] | None = None,
+    ) -> BuildResult:
         """Build or update the code graph of a project with graphify (AST only, no LLM).
 
         Writes `<root>/graphify-out/graph.json` and `GRAPH_REPORT.md`. A later
         build re-extracts only changed files. Supports Clojure, Python,
         JavaScript, TypeScript, Java, Go, Rust and the other graphify languages.
+        When a domain plugin applies, the graph also gets its commands, queries
+        and events as `domain:<kind>:<service>:<name>` nodes.
 
         Args:
             root: Project directory, relative to the workspace root.
             force: Overwrite graph.json even if the new graph has fewer nodes.
             cluster: Detect communities. False is faster on large projects.
             timeout_s: Stop graphify after this many seconds.
+            plugins: Extra domain plugin specs: a name, `module:attr` or a `.py` file or directory.
 
         Returns:
             BuildResult with the counts and the last lines of graphify output.
@@ -235,7 +302,9 @@ class GraphifyTools:
             argv.append("--no-cluster")
         started = time.monotonic()
         try:
-            done = self._run(argv, cwd=str(path), env=_child_env(), capture_output=True, text=True, timeout=timeout_s)
+            done = self._run(
+                argv, cwd=str(path), env=_plugin_env(plugins or ()), capture_output=True, text=True, timeout=timeout_s
+            )
         except subprocess.TimeoutExpired as error:
             raise TimeoutError(f"graphify did not finish in {timeout_s} s for {path}.") from error
         seconds = round(time.monotonic() - started, 2)
@@ -384,3 +453,98 @@ class GraphifyTools:
                 f"graphify query exited with status {done.returncode}.\n{_tail(done.stderr or done.stdout or '')}"
             )
         return QueryAnswer(question, (done.stdout or "").strip())
+
+    def domain(
+        self, root: str = ".", plugins: list[str] | None = None, limit: int = 200, timeout_s: int = 600
+    ) -> DomainReport:
+        """Map the domain flows of a project: commands, queries, events, effects and their schemas.
+
+        Domain plugins read framework registrations, such as edd-core `reg-cmd`
+        and `reg-event`, and follow the links across services. Writes
+        `<root>/graphify-out/domain/DOMAIN.md` (Mermaid diagrams, flows,
+        findings, schemas), `domain.json` and one JSON Schema for each Malli
+        schema. Findings report, for example, calls to commands or queries
+        that no service registers.
+
+        Args:
+            root: Project directory, relative to the workspace root.
+            plugins: Use only these plugin specs: a name such as `edd-core`, `module:attr`, or a
+                `.py` file or directory. None detects the plugins that apply.
+            limit: Maximum count of returned findings. The counts stay complete.
+            timeout_s: Stop graphify after this many seconds.
+        """
+        path = self._root(root)
+        argv = graphify_command() + ["domain", str(path), "--json"]
+        for spec in plugins or ():
+            argv += ["--plugin", spec]
+        try:
+            done = self._run(argv, cwd=str(path), env=_plugin_env(), capture_output=True, text=True, timeout=timeout_s)
+        except subprocess.TimeoutExpired as error:
+            raise TimeoutError(f"graphify domain did not finish in {timeout_s} s for {path}.") from error
+        stderr = done.stderr or ""
+        try:
+            data = json.loads(done.stdout or "")
+        except json.JSONDecodeError:
+            data = None
+        if done.returncode != 0 or not isinstance(data, dict):
+            raise RuntimeError(
+                f"graphify domain exited with status {done.returncode}.\n{_tail(stderr or done.stdout or '')}"
+            )
+        raw = data.get("findings") or []
+        findings = tuple(
+            DomainFinding(
+                severity=str(f.get("severity") or ""),
+                code=str(f.get("code") or ""),
+                message=str(f.get("message") or ""),
+                file=str(f.get("file") or ""),
+                line=f.get("line") if isinstance(f.get("line"), int) else None,
+                element=str(f.get("ref") or ""),
+                plugin=str(f.get("plugin") or ""),
+            )
+            for f in raw[:limit]
+        )
+        counts = data.get("finding_counts") or {}
+        prefix = "warning: plugin error: "
+        return DomainReport(
+            root=str(data.get("root") or path),
+            markdown_path=str(data.get("markdown") or ""),
+            json_path=str(data.get("json") or ""),
+            plugins=tuple(data.get("plugins") or ()),
+            services=tuple(data.get("services") or ()),
+            counts=dict(data.get("counts") or {}),
+            relations=int(data.get("relations") or 0),
+            schemas=int(data.get("schemas") or 0),
+            errors=int(counts.get("error") or 0),
+            warnings=int(counts.get("warning") or 0),
+            notes=int(counts.get("info") or 0),
+            findings=findings,
+            plugin_errors=tuple(line[len(prefix) :] for line in stderr.splitlines() if line.startswith(prefix)),
+            truncated=len(raw) > limit,
+        )
+
+    def domain_plugins(self, root: str = ".", timeout_s: int = 120) -> tuple[PluginInfo, ...]:
+        """List the domain plugins that graphify finds for a project.
+
+        graphify finds built-in plugins (`edd-core`), plugins that ship with this
+        extension, installed `graphify.domain_plugins` entry points, Python files
+        in `<root>/.graphify/plugins/` and specs in `GRAPHIFY_PLUGINS`.
+
+        Args:
+            root: Project directory, relative to the workspace root.
+            timeout_s: Stop graphify after this many seconds.
+        """
+        path = self._root(root)
+        argv = graphify_command() + ["domain", str(path), "--list-plugins", "--json"]
+        done = self._run(argv, cwd=str(path), env=_plugin_env(), capture_output=True, text=True, timeout=timeout_s)
+        try:
+            rows = json.loads(done.stdout or "")
+        except json.JSONDecodeError:
+            rows = None
+        if done.returncode != 0 or not isinstance(rows, list):
+            raise RuntimeError(
+                f"graphify domain exited with status {done.returncode}.\n{_tail(done.stderr or done.stdout or '')}"
+            )
+        return tuple(
+            PluginInfo(str(r.get("name") or ""), str(r.get("description") or ""), str(r.get("module") or ""))
+            for r in rows
+        )

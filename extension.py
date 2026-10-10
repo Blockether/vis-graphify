@@ -7,7 +7,7 @@ import blockether.vis.extension as vis
 from vis_graphify import presentation
 from vis_graphify.tools import GraphifyTools
 
-VERSION = "0.1.1"
+VERSION = "0.2.0"
 
 _Tag = Literal["observation", "mutation"]
 
@@ -28,7 +28,14 @@ def _bind(name, label, build, arguments=(), *, tag: _Tag = "observation", show_s
     )
 
 
-_bind("build", "Build code graph", presentation.build, ("root", "force", "cluster"), tag="mutation", show_start=True)
+_bind(
+    "build",
+    "Build code graph",
+    presentation.build,
+    ("root", "force", "cluster", "timeout_s", "plugins"),
+    tag="mutation",
+    show_start=True,
+)
 _bind("status", "Check code graph", presentation.status, ("root",))
 _bind("search", "Search code graph", presentation.search, ("pattern", "root"))
 _bind("explain", "Explain code node", presentation.explain, ("node", "root"))
@@ -36,21 +43,27 @@ _bind("shortest_path", "Find code path", presentation.shortest_path, ("source", 
 _bind("hubs", "List code hubs", presentation.hubs, ("root", "limit", "relation"))
 _bind("affected", "Find affected code", presentation.affected, ("node", "root", "depth"))
 _bind("query", "Query code graph", presentation.query, ("question", "root"), show_start=True)
+_bind("domain", "Map domain flows", presentation.domain, ("root", "plugins"), tag="mutation", show_start=True)
+_bind("domain_plugins", "List domain plugins", presentation.domain_plugins, ("root",))
 
 PROMPT = """graphify surface active: a code knowledge graph (tree-sitter AST, no LLM) of the workspace.
   graphify.build(root=".")                    create or update <root>/graphify-out/graph.json
   graphify.status(root=".")                   size and age of the graph
   graphify.search(pattern) · graphify.explain(node) · graphify.hubs()
   graphify.shortest_path(source, target) · graphify.affected(node, depth=2) · graphify.query(question)
+  graphify.domain(root=".", plugins=None)     commands, queries, events, flows and Malli schemas -> DOMAIN.md
+  graphify.domain_plugins(root=".")           domain plugins that apply, such as edd-core
 Call graphify.build() once before the first query, and again after large edits; it re-extracts only changed files.
 Name a node by id, label (`run-tests()`), bare name or Clojure `ns/name`. An ambiguous name raises an error that lists the candidate ids.
 Use the graph to find callers, dependents and paths across files; read the code itself before you edit it.
+graphify.domain() reports calls to commands or queries that no service registers. Read DOMAIN.md for the diagrams.
+Add a framework as a plugin file in <root>/.graphify/plugins/ or pass its path in `plugins`.
 Results are typed frozen objects."""
 
 vis.register_extension(
     vis.Extension(
         name="vis-graphify",
-        description="Code knowledge graphs with graphify: build, search, explain, paths, hubs and change impact, with full Clojure support.",
+        description="Code knowledge graphs with graphify: build, search, explain, paths, hubs, change impact and domain flows (edd-core commands, queries, events, Malli schemas), with full Clojure support.",
         version=VERSION,
         alias="graphify",
         symbols=[vis.Symbol(GraphifyTools(workspace_root=vis.workspace_root), name="graphify")],

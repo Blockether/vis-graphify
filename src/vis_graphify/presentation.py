@@ -8,12 +8,14 @@ import blockether.vis.extension as vis
 
 from vis_graphify.tools import (
     BuildResult,
+    DomainReport,
     Explanation,
     GraphStatus,
     Hub,
     ImpactResult,
     Node,
     PathResult,
+    PluginInfo,
     QueryAnswer,
     SearchResult,
 )
@@ -169,6 +171,50 @@ def query(result: QueryAnswer) -> vis.ActivityPresentation:
         "Query code graph",
         f"{_plural(nodes, 'node')}, {_plural(edges, 'edge')}{more}",
         (vis.ActivityCode(_clip(result.text, 6000)),),
+    )
+
+
+def domain(result: DomainReport) -> vis.ActivityPresentation:
+    if not result.plugins:
+        content = [
+            vis.ActivityText("No domain plugin applies. Name one in `plugins`, or list them with domain_plugins().")
+        ]
+        content += [vis.ActivityCode(error) for error in result.plugin_errors]
+        return vis.ActivityPresentation("Map domain flows", "no plugin applies", tuple(content))
+    kinds = ", ".join(_plural(count, kind) for kind, count in result.counts.items())
+    summary = (
+        f"{', '.join(result.plugins)}: {_plural(len(result.services), 'service')}, {kinds}, "
+        f"{_plural(result.errors, 'error')}, {_plural(result.warnings, 'warning')}"
+    )
+    content: list = [vis.ActivityText(result.markdown_path)]
+    content += [vis.ActivityCode(f"plugin error: {error}") for error in result.plugin_errors]
+    problems = [f for f in result.findings if f.severity in ("error", "warning")]
+    if problems:
+        rows = tuple(
+            (f.severity, f.code, _clip(f.message, 160), f"{f.file}:{f.line}" if f.file and f.line else f.file)
+            for f in problems[:50]
+        )
+        content += [
+            vis.ActivityHeading("Findings"),
+            vis.ActivityTable(
+                ("Severity", "Code", "Message", "Location"), rows, paths=tuple(f.file for f in problems[:50])
+            ),
+        ]
+    return vis.ActivityPresentation("Map domain flows", summary, tuple(content))
+
+
+def domain_plugins(result: tuple[PluginInfo, ...]) -> vis.ActivityPresentation:
+    if not result:
+        return vis.ActivityPresentation(
+            "List domain plugins", "no plugins", (vis.ActivityText("graphify found no domain plugin."),)
+        )
+    failed = sum(1 for plugin in result if plugin.name == "<error>")
+    more = f", {_plural(failed, 'load error')}" if failed else ""
+    rows = tuple((plugin.name, _clip(plugin.description, 160), plugin.module) for plugin in result)
+    return vis.ActivityPresentation(
+        "List domain plugins",
+        f"{_plural(len(result) - failed, 'plugin')}{more}",
+        (vis.ActivityTable(("Plugin", "Description", "Module"), rows),),
     )
 
 

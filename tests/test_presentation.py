@@ -7,10 +7,13 @@ import pytest
 from vis_graphify import presentation
 from vis_graphify.tools import (
     BuildResult,
+    DomainFinding,
+    DomainReport,
     Explanation,
     GraphifyTools,
     ImpactResult,
     PathResult,
+    PluginInfo,
     QueryAnswer,
     SearchResult,
 )
@@ -80,7 +83,18 @@ def test_extension_registers_every_tool_with_an_activity(monkeypatch):
     assert extension.version == module.VERSION
     public = [name for name in vars(GraphifyTools) if not name.startswith("_")]
     assert sorted(public) == sorted(
-        ["build", "status", "search", "explain", "shortest_path", "hubs", "affected", "query"]
+        [
+            "build",
+            "status",
+            "search",
+            "explain",
+            "shortest_path",
+            "hubs",
+            "affected",
+            "query",
+            "domain",
+            "domain_plugins",
+        ]
     )
     for name in public:
         method = getattr(GraphifyTools, name)
@@ -93,3 +107,43 @@ def test_versions_agree():
     declared = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["version"]
     text = (ROOT / "extension.py").read_text()
     assert f'VERSION = "{declared}"' in text
+
+
+def _report(plugins=("edd-core",), findings=(), plugin_errors=()):
+    return DomainReport(
+        "/p",
+        "/p/graphify-out/domain/DOMAIN.md",
+        "/p/d.json",
+        plugins,
+        ("orders-svc",),
+        {"command": 2, "event": 1},
+        3,
+        1,
+        1,
+        0,
+        1,
+        findings,
+        plugin_errors,
+        False,
+    )
+
+
+def test_domain_states():
+    missing = DomainFinding("error", "missing-command", "No `release-stok`.", "a.clj", 17, "command:x:y", "edd-core")
+    note = DomainFinding("info", "query-unused", "unused", "", None, "", "edd-core")
+    presented = presentation.domain(_report(findings=(missing, note)))
+    assert summary(presented) == "edd-core: 1 service, 2 commands, 1 event, 1 error, 0 warnings"
+    (table,) = [block for block in presented.content if isinstance(block, vis.ActivityTable)]
+    assert table.rows == (("error", "missing-command", "No `release-stok`.", "a.clj:17"),)
+    empty = presentation.domain(_report(plugins=(), plugin_errors=("bad.py: boom",)))
+    assert summary(empty) == "no plugin applies"
+    assert "bad.py: boom" in [getattr(block, "text", "") for block in empty.content]
+    clean = presentation.domain(_report())
+    assert not [block for block in clean.content if isinstance(block, vis.ActivityTable)]
+
+
+def test_domain_plugins_states():
+    rows = (PluginInfo("edd-core", "edd", "m"), PluginInfo("<error>", "x.py: boom", ""))
+    assert summary(presentation.domain_plugins(rows)) == "1 plugin, 1 load error"
+    assert summary(presentation.domain_plugins(rows[:1])) == "1 plugin"
+    assert summary(presentation.domain_plugins(())) == "no plugins"

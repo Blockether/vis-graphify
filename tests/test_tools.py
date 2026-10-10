@@ -1,10 +1,12 @@
+import json
+import os
 import subprocess
 from pathlib import Path
 
 import pytest
 
 from vis_graphify import graph as g
-from vis_graphify.tools import GraphifyTools, graphify_command
+from vis_graphify.tools import BUNDLED_PLUGINS, GraphifyTools, graphify_command
 
 
 def tools_for(root, runner=None):
@@ -106,3 +108,85 @@ def test_query_without_graph_raises(tmp_path):
 def test_graphify_command_finds_an_interpreter():
     argv = graphify_command()
     assert Path(argv[0]).exists() or argv[0] == "graphify"
+
+
+DOMAIN_JSON = {
+    "root": "/p",
+    "markdown": "/p/graphify-out/domain/DOMAIN.md",
+    "json": "/p/graphify-out/domain/domain.json",
+    "plugins": ["edd-core"],
+    "services": ["inventory-svc", "orders-svc"],
+    "counts": {"command": 2, "event": 2},
+    "relations": 4,
+    "schemas": 1,
+    "findings": [
+        {
+            "severity": "error",
+            "code": "missing-command",
+            "message": "on-placed triggers `release-stok`.",
+            "file": "orders-svc/src/orders/main.clj",
+            "line": 17,
+            "ref": "command:inventory-svc:release-stok",
+            "plugin": "edd-core",
+        },
+        {"severity": "info", "code": "query-unused", "message": "x", "file": None, "line": None, "ref": None},
+    ],
+    "finding_counts": {"error": 1, "warning": 0, "info": 1},
+}
+
+
+def test_domain_runs_plugins_and_parses_the_report(project):
+    runner = FakeRunner(stdout=json.dumps(DOMAIN_JSON), stderr="warning: plugin error: bad.py: boom\n")
+    report = tools_for(project, runner).domain(plugins=["edd-core", "bad.py"], limit=1)
+    argv, kwargs = runner.calls[0]
+    assert argv[-7:] == ["domain", str(project.resolve()), "--json", "--plugin", "edd-core", "--plugin", "bad.py"]
+    assert kwargs["env"]["GRAPHIFY_PLUGINS"].split(os.pathsep)[0] == str(BUNDLED_PLUGINS)
+    assert (report.plugins, report.services) == (("edd-core",), ("inventory-svc", "orders-svc"))
+    assert (report.errors, report.warnings, report.notes, report.relations) == (1, 0, 1, 4)
+    assert report.markdown_path.endswith("DOMAIN.md") and report.counts == {"command": 2, "event": 2}
+    (finding,) = report.findings
+    assert (finding.code, finding.line, finding.element) == (
+        "missing-command",
+        17,
+        "command:inventory-svc:release-stok",
+    )
+    assert report.truncated and report.plugin_errors == ("bad.py: boom",)
+
+
+def test_domain_without_findings_limit_keeps_optional_fields(project):
+    report = tools_for(project, FakeRunner(stdout=json.dumps(DOMAIN_JSON))).domain()
+    note = report.findings[1]
+    assert (note.file, note.line, note.element, note.plugin) == ("", None, "", "")
+    assert not report.truncated
+
+
+def test_domain_failure_and_timeout_raise(project):
+    with pytest.raises(RuntimeError, match="status 2") as error:
+        tools_for(project, FakeRunner(2, "", "error: x.py: file not found")).domain(plugins=["x.py"])
+    assert "file not found" in str(error.value)
+    with pytest.raises(RuntimeError, match="status 0"):
+        tools_for(project, FakeRunner(0, "not json")).domain()
+
+    def runner(argv, **kwargs):
+        raise subprocess.TimeoutExpired(argv, 1)
+
+    with pytest.raises(TimeoutError):
+        tools_for(project, runner).domain(timeout_s=1)
+
+
+def test_domain_plugins_lists_rows(project):
+    rows = [{"name": "edd-core", "description": "edd", "module": "graphify.plugins.edd_core"}]
+    runner = FakeRunner(stdout=json.dumps(rows))
+    (plugin,) = tools_for(project, runner).domain_plugins()
+    assert runner.calls[0][0][-2:] == ["--list-plugins", "--json"]
+    assert (plugin.name, plugin.module) == ("edd-core", "graphify.plugins.edd_core")
+    with pytest.raises(RuntimeError):
+        tools_for(project, FakeRunner(1, "", "boom")).domain_plugins()
+
+
+def test_build_passes_plugins_to_graphify(project, monkeypatch):
+    monkeypatch.setenv("GRAPHIFY_PLUGINS", "user.py")
+    runner = FakeRunner()
+    tools_for(project, runner).build(plugins=["routes.py"])
+    env = runner.calls[0][1]["env"]
+    assert env["GRAPHIFY_PLUGINS"].split(os.pathsep) == [str(BUNDLED_PLUGINS), "routes.py", "user.py"]
