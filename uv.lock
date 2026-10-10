@@ -27,7 +27,7 @@ wheels = [
 [[package]]
 name = "graphifyy"
 version = "0.9.84+blockether.1"
-source = { git = "https://github.com/Blockether/graphify?rev=v0.9.84-blockether.4#053d7df5634b6ddde35f14368b4176dd1e7a94a3" }
+source = { git = "https://github.com/Blockether/graphify?rev=v0.9.84-blockether.5#fe5f7063e4ff7e941df1a47a75a709c1f994470e" }
 dependencies = [
     { name = "networkx", version = "3.6.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "networkx", version = "3.7", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
@@ -1153,7 +1153,7 @@ wheels = [
 
 [[package]]
 name = "vis-graphify"
-version = "0.2.0"
+version = "0.2.1"
 source = { virtual = "." }
 dependencies = [
     { name = "graphifyy" },
@@ -1162,6 +1162,6 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "graphifyy", git = "https://github.com/Blockether/graphify?rev=v0.9.84-blockether.4" },
+    { name = "graphifyy", git = "https://github.com/Blockether/graphify?rev=v0.9.84-blockether.5" },
     { name = "vis-agent", specifier = ">=0.2.26" },
 ]

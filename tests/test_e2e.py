@@ -159,3 +159,45 @@ def test_project_and_bundled_plugins(tmp_path, monkeypatch):
     monkeypatch.setattr(tools_module, "BUNDLED_PLUGINS", bundled)
     assert "batch" in {p.name for p in tools.domain_plugins()}
     assert tools.domain(plugins=["batch"]).counts == {"job": 1}
+
+
+def test_real_schema_and_payload_checks(tmp_path):
+    files = {
+        "orders-svc/src/orders/main.clj": """(ns orders.main
+  (:require [edd.core :as edd]))
+
+(defn on-placed [_ctx event]
+  {:service :inventory-svc
+   :commands [{:cmd-id :reserve-stock
+               :id (:id event)
+               :attrs {:qty 0}}]})
+
+(defn register [ctx]
+  (-> ctx
+      (edd/reg-event :order-placed (fn [agg _] agg))
+      (edd/reg-fx :order-placed on-placed)))
+""",
+        "inventory-svc/src/inventory/main.clj": """(ns inventory.main
+  (:require [edd.core :as edd]))
+
+(defn reserve-stock [_ctx cmd]
+  {:event-id :stock-reserved
+   :id (:id cmd)})
+
+(defn register [ctx]
+  (-> ctx
+      (edd/reg-cmd :reserve-stock reserve-stock
+                   :consumes [:map [:attrs [:map [:qty pos-int?] [:sku {:optional true} :stirng]]]])
+      (edd/reg-event :stock-reserved (fn [agg _] agg))))
+""",
+    }
+    for rel, text in files.items():
+        path = tmp_path / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+    report = GraphifyTools(workspace_root=lambda: str(tmp_path)).domain()
+    errors = {f.code: f for f in report.findings if f.severity == "error"}
+    assert set(errors) == {"payload-invalid", "schema-unknown-type"}
+    assert errors["payload-invalid"].file == "orders-svc/src/orders/main.clj"
+    assert "attrs.qty: is 0, expected at least 1" in errors["payload-invalid"].message
+    assert "`:stirng`" in errors["schema-unknown-type"].message

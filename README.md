@@ -59,7 +59,10 @@ queries, events, effects and Malli schemas. The call writes these files to `<roo
 - `schemas/`: one JSON Schema for each Malli schema.
 
 The result lists the findings, errors first. For example, `missing-command` means that code calls a
-command that the target service does not register. `graphify.build()` also adds the domain elements
+command that the target service does not register. `payload-invalid` means that a call sends data
+that the full `:consumes` schema of its target rejects. Codes that start with `schema-` mark a broken
+Malli schema, such as an unknown type, `:min` above `:max` or a regex that cannot compile. `DOMAIN.md`
+lists these problems under each schema. `graphify.build()` also adds the domain elements
 to the graph, so `graphify.explain("domain:command:orders-svc:place-order")` shows the handler.
 
 To read another framework, write a domain plugin: a Python file with a `plugin` object that has a

@@ -7,7 +7,7 @@ import blockether.vis.extension as vis
 from vis_graphify import presentation
 from vis_graphify.tools import GraphifyTools
 
-VERSION = "0.2.0"
+VERSION = "0.2.1"
 
 _Tag = Literal["observation", "mutation"]
 
@@ -56,7 +56,7 @@ PROMPT = """graphify surface active: a code knowledge graph (tree-sitter AST, no
 Call graphify.build() once before the first query, and again after large edits; it re-extracts only changed files.
 Name a node by id, label (`run-tests()`), bare name or Clojure `ns/name`. An ambiguous name raises an error that lists the candidate ids.
 Use the graph to find callers, dependents and paths across files; read the code itself before you edit it.
-graphify.domain() reports calls to commands or queries that no service registers. Read DOMAIN.md for the diagrams.
+graphify.domain() reports calls to commands or queries that no service registers, call data that the :consumes schema rejects and broken Malli schemas. Read DOMAIN.md for the diagrams.
 Add a framework as a plugin file in <root>/.graphify/plugins/ or pass its path in `plugins`.
 Results are typed frozen objects."""
 
