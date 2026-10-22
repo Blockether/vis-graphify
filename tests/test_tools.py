@@ -210,3 +210,27 @@ def test_build_passes_plugins_to_graphify(project, monkeypatch):
     tools_for(project, runner).build(plugins=["routes.py"])
     env = runner.calls[0][1]["env"]
     assert env["GRAPHIFY_PLUGINS"].split(os.pathsep) == [str(BUNDLED_PLUGINS), "routes.py", "user.py"]
+
+
+def test_private_marks_unexported_definitions(tmp_path):
+    from vis_graphify.tools import Node, _private
+
+    files = {
+        "a.ts": "function prepare() {}\nexport function handle() {}\n",
+        "a.clj": "(defn- prepare [])\n(defn handle [])\n",
+        "a.go": "func prepare() {}\nfunc Handle() {}\n",
+        "a.py": "def _prepare():\n    pass\ndef handle():\n    pass\n",
+        "a.rs": "fn prepare() {}\npub fn handle() {}\n",
+    }
+    for name, body in files.items():
+        (tmp_path / name).write_text(body)
+    hidden = [("a.ts", 1, "prepare"), ("a.clj", 1, "prepare"), ("a.go", 1, "prepare"), ("a.py", 1, "_prepare")]
+    shown = [("a.ts", 2, "handle"), ("a.clj", 2, "handle"), ("a.go", 2, "Handle"), ("a.py", 3, "handle")]
+    hidden.append(("a.rs", 1, "prepare"))
+    shown.append(("a.rs", 2, "handle"))
+
+    def node(file, line, name):
+        return Node(name, f"{name}()", file, line, "code", None)
+
+    assert all(_private(tmp_path, node(*row)) for row in hidden)
+    assert not any(_private(tmp_path, node(*row)) for row in shown)

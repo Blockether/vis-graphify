@@ -11,6 +11,7 @@ import fnmatch
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -176,22 +177,24 @@ class ImpactResult:
     files: Annotated[tuple[str, ...], "Distinct source files of the dependents."]
     impacts: Annotated[tuple[Impact, ...], "Dependents, nearest first."]
     truncated: Annotated[bool, "True when `limit` cut the list."]
-    mentions: Annotated[
-        tuple[str, ...], "`file:lines` of other code symbols that spell the name and do not resolve to the node."
+    others: Annotated[
+        tuple[str, ...],
+        "Other nodes with the same name, which are not this node, each with the files of its direct users.",
     ] = ()
-    text_mentions: Annotated[int, "Count of strings and comments that spell the name."] = 0
+    functions: Annotated[
+        tuple[str, ...], "Sorted names of the dependent functions; a private or unexported one ends with ` (private)`."
+    ] = ()
 
     def __str__(self) -> str:
         more = " (cut by `limit`)" if self.truncated else ""
         header = f"{len(self.impacts)} dependents of {self.node.label} in {len(self.files)} files{more}. Distance, relation, node, then the nodes between:"
         lines = [_listing(header, self.impacts, "impacts")]
         name = self.node.label.removesuffix("()")
-        if self.mentions:
-            lines.append(f"Other symbols that spell {name}, not dependents: {'; '.join(self.mentions)}")
-        else:
-            lines.append(f"No other code spells {name}.")
-        if self.text_mentions:
-            lines.append(f"Plus {self.text_mentions} mentions in strings and comments.")
+        if self.others:
+            lines.append(f"Different nodes also named {name}; their users are not in this list:")
+            lines += [f"  {other}" for other in self.others]
+        if self.functions:
+            lines.append(f"Dependent functions{'' if self.truncated else ', complete'}: {', '.join(self.functions)}")
         return "\n".join(lines)
 
 
@@ -578,6 +581,45 @@ def _plugin_env(plugins: tuple[str, ...] | list[str] = ()) -> dict[str, str]:
     return env
 
 
+_PRIVATE_DEFINITION = re.compile(r"^\s*(\(defn-|\(def\s+\^:private|private\s|fn\s|func\s+[a-z_])")
+
+
+def _private(root: Path, node: Node) -> bool:
+    """True when the definition of `node` is private or not exported, from its name and its definition line."""
+    name = node.label.removesuffix("()")
+    if name.startswith("_"):
+        return True
+    try:
+        text = (root / node.file).read_text(encoding="utf-8", errors="replace").splitlines()[node.line - 1]
+    except (OSError, IndexError, TypeError):
+        return False
+    if node.file.endswith((".ts", ".tsx", ".js", ".jsx", ".mjs")):
+        return text.startswith(("function ", "async function ", "const ", "let ", "class "))
+    if node.file.endswith(".go"):
+        return name[:1].islower()
+    return bool(_PRIVATE_DEFINITION.match(text))
+
+
+def _others(graph: g.Graph, node_id: str, limit: int = 5) -> tuple[str, ...]:
+    """Other code nodes with the same label as `node_id`, each with the files of its direct users."""
+    label = graph.nodes[node_id].get("label")
+    rows = []
+    for other_id, data in graph.nodes.items():
+        if other_id == node_id or data.get("label") != label or data.get("file_type") != "code":
+            continue
+        other = _node(graph, other_id)
+        users = sorted(
+            {
+                _node(graph, link.source).file
+                for link in graph.incoming.get(other_id, ())
+                if link.relation in g.DEPENDENT_RELATIONS and _node(graph, link.source).file
+            }
+        )
+        used = f"used in {', '.join(users)}" if users else "not used"
+        rows.append(f"{other.label} {other.file}:{other.line or 1} [{other_id}], {used}")
+    return tuple(rows[:limit])
+
+
 Runner = Callable[..., subprocess.CompletedProcess]
 
 
@@ -781,7 +823,8 @@ class GraphifyTools:
             within: Keep only dependents in this folder or file: a path prefix such as
                 `src/handlers/` or a glob such as `**/*_test.py`. The search still follows every step.
         """
-        graph = self._graph(self._root(root))
+        path = self._root(root)
+        graph = self._graph(path)
         node_id = g.resolve(graph, node)
         rows = g.affected(graph, node_id, max(1, depth) if depth else len(graph.nodes))
         target = {other: link.target for other, _, link in rows}
@@ -800,25 +843,23 @@ class GraphifyTools:
         )
         files = tuple(sorted({impact.node.file for impact in impacts if impact.node.file}))
         reached = max((impact.distance for impact in impacts), default=0)
-        mentions, text_mentions = self._spellings(graph, node_id, self._root(root))
-        return ImpactResult(
-            _node(graph, node_id), depth or reached, files, impacts, len(rows) > limit, mentions, text_mentions
+        functions = tuple(
+            sorted(
+                {
+                    impact.node.label.removesuffix("()") + (" (private)" if _private(path, impact.node) else "")
+                    for impact in impacts
+                    if impact.node.label.endswith("()")
+                }
+            )
         )
-
-    def _spellings(self, graph: g.Graph, node_id: str, path: Path) -> tuple[tuple[str, ...], int]:
-        """Other code symbols that spell the name of `node_id`, as `file:lines`, and the text mention count."""
-        from graphify import refactor
-
-        try:
-            found = refactor.plan_rename(_raw(graph), node_id, "zz_probe", path).mentions
-        except Exception:  # noqa: BLE001 - the listing stays useful without spellings
-            return (), 0
-        lines: dict[str, list[str]] = {}
-        for mention in found:
-            if mention.kind == "symbol":
-                lines.setdefault(_relative(path, mention.file), []).append(str(mention.line))
-        return tuple(f"{file}:{','.join(rows)}" for file, rows in sorted(lines.items())), sum(
-            1 for mention in found if mention.kind != "symbol"
+        return ImpactResult(
+            _node(graph, node_id),
+            depth or reached,
+            files,
+            impacts,
+            len(rows) > limit,
+            _others(graph, node_id),
+            functions,
         )
 
     def references(self, node: str, root: str = ".", limit: int = 200) -> ReferencesResult:

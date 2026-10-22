@@ -28,8 +28,9 @@ def test_real_clojure_graph(tmp_path):
     assert {e.node.label for e in run.outgoing if e.relation == "calls"} >= {"connect()", "query()"}
     impact = tools.affected("demo.db/connect")
     assert "src/demo/core.clj" in impact.files
-    assert (impact.mentions, impact.text_mentions) == (("src/demo/other.clj:4",), 1)
-    assert str(impact).endswith("not dependents: src/demo/other.clj:4\nPlus 1 mentions in strings and comments.")
+    assert impact.others == ("connect() src/demo/other.clj:4 [src_demo_other_connect], not used",)
+    assert impact.functions == ("run",)
+    assert str(impact).endswith("not used\nDependent functions, complete: run")
     assert tools.affected("demo.db/connect", within="src/demo/core.clj").files == ("src/demo/core.clj",)
     assert tools.affected("demo.db/connect", within="lib/").impacts == ()
     assert tools.shortest_path("demo.core/run", "demo.db/query").found

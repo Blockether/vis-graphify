@@ -7,7 +7,7 @@ import blockether.vis.extension as vis
 from vis_graphify import presentation
 from vis_graphify.tools import GraphifyTools, HubsResult, ImpactResult, ReferencesResult, SearchResult
 
-VERSION = "0.5.2"
+VERSION = "0.5.3"
 
 _Tag = Literal["observation", "mutation"]
 
@@ -65,7 +65,7 @@ For these tasks, make one graphify call the first step, before any ls, cat, grep
   print(graphify.references(node))                   every exact site of a symbol, with file:line:column
   print(graphify.rename(node, new_name, apply=True)) rename a function, method, class, type or var everywhere
   print(graphify.add_parameter(node, "currency string", '"EUR"', apply=True))  add a last parameter and an argument at every call
-Each call skips strings, comments and other symbols with the same name. affected and references are exact and complete: answer from them, without reading the files.
+Each call skips strings, comments and other symbols with the same name. affected and references are exact and complete. affected ends with the full list of dependent functions and marks private ones: write the answer from it. Do not open the files that a result names to confirm it.
 After a write they run the project check (go vet, tsc, cargo check, clj-kondo or Python syntax). The printed result lists every changed line, every other spelling of the old name and the check result.
 That result is the diff review and the verification: when it says `passed`, reply at once. Do not read, grep, run checks or git again.
 Name a node by `pkg.Name`, `Class.method`, `ns/name`, `crate::mod::name` or bare name. When the task names the file, use `src/money/format.ts::name`. An ambiguous name raises an error that lists the candidates.
