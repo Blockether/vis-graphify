@@ -20,6 +20,7 @@ def test_real_clojure_graph(tmp_path):
         "(ns demo.core\n  (:require [demo.db :as db]))\n\n"
         '(defn run [url]\n  (let [conn (db/connect url)]\n    (db/query conn "select 1")))\n'
     )
+    (src / "other.clj").write_text("(ns demo.other)\n\n;; connect is local here\n(defn connect [] :other)\n")
     tools = GraphifyTools(workspace_root=lambda: str(tmp_path))
     built = tools.build(cluster=False, timeout_s=600)
     assert built.nodes >= 5
@@ -27,6 +28,8 @@ def test_real_clojure_graph(tmp_path):
     assert {e.node.label for e in run.outgoing if e.relation == "calls"} >= {"connect()", "query()"}
     impact = tools.affected("demo.db/connect")
     assert "src/demo/core.clj" in impact.files
+    assert (impact.mentions, impact.text_mentions) == (("src/demo/other.clj:4",), 1)
+    assert str(impact).endswith("not dependents: src/demo/other.clj:4\nPlus 1 mentions in strings and comments.")
     assert tools.affected("demo.db/connect", within="src/demo/core.clj").files == ("src/demo/core.clj",)
     assert tools.affected("demo.db/connect", within="lib/").impacts == ()
     assert tools.shortest_path("demo.core/run", "demo.db/query").found

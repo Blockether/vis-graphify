@@ -176,11 +176,23 @@ class ImpactResult:
     files: Annotated[tuple[str, ...], "Distinct source files of the dependents."]
     impacts: Annotated[tuple[Impact, ...], "Dependents, nearest first."]
     truncated: Annotated[bool, "True when `limit` cut the list."]
+    mentions: Annotated[
+        tuple[str, ...], "`file:lines` of other code symbols that spell the name and do not resolve to the node."
+    ] = ()
+    text_mentions: Annotated[int, "Count of strings and comments that spell the name."] = 0
 
     def __str__(self) -> str:
         more = " (cut by `limit`)" if self.truncated else ""
         header = f"{len(self.impacts)} dependents of {self.node.label} in {len(self.files)} files{more}. Distance, relation, node, then the nodes between:"
-        return _listing(header, self.impacts, "impacts")
+        lines = [_listing(header, self.impacts, "impacts")]
+        name = self.node.label.removesuffix("()")
+        if self.mentions:
+            lines.append(f"Other symbols that spell {name}, not dependents: {'; '.join(self.mentions)}")
+        else:
+            lines.append(f"No other code spells {name}.")
+        if self.text_mentions:
+            lines.append(f"Plus {self.text_mentions} mentions in strings and comments.")
+        return "\n".join(lines)
 
 
 @dataclass(frozen=True)
@@ -788,7 +800,26 @@ class GraphifyTools:
         )
         files = tuple(sorted({impact.node.file for impact in impacts if impact.node.file}))
         reached = max((impact.distance for impact in impacts), default=0)
-        return ImpactResult(_node(graph, node_id), depth or reached, files, impacts, len(rows) > limit)
+        mentions, text_mentions = self._spellings(graph, node_id, self._root(root))
+        return ImpactResult(
+            _node(graph, node_id), depth or reached, files, impacts, len(rows) > limit, mentions, text_mentions
+        )
+
+    def _spellings(self, graph: g.Graph, node_id: str, path: Path) -> tuple[tuple[str, ...], int]:
+        """Other code symbols that spell the name of `node_id`, as `file:lines`, and the text mention count."""
+        from graphify import refactor
+
+        try:
+            found = refactor.plan_rename(_raw(graph), node_id, "zz_probe", path).mentions
+        except Exception:  # noqa: BLE001 - the listing stays useful without spellings
+            return (), 0
+        lines: dict[str, list[str]] = {}
+        for mention in found:
+            if mention.kind == "symbol":
+                lines.setdefault(_relative(path, mention.file), []).append(str(mention.line))
+        return tuple(f"{file}:{','.join(rows)}" for file, rows in sorted(lines.items())), sum(
+            1 for mention in found if mention.kind != "symbol"
+        )
 
     def references(self, node: str, root: str = ".", limit: int = 200) -> ReferencesResult:
         """List every exact site of a symbol: its definition, uses, member calls and imports.
