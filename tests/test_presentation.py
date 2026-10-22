@@ -15,6 +15,10 @@ from vis_graphify.tools import (
     PathResult,
     PluginInfo,
     QueryAnswer,
+    Reference,
+    ReferencesResult,
+    RenameEdit,
+    RenameResult,
     SearchResult,
 )
 
@@ -91,6 +95,8 @@ def test_extension_registers_every_tool_with_an_activity(monkeypatch):
             "shortest_path",
             "hubs",
             "affected",
+            "references",
+            "rename",
             "query",
             "domain",
             "domain_plugins",
@@ -147,3 +153,28 @@ def test_domain_plugins_states():
     assert summary(presentation.domain_plugins(rows)) == "1 plugin, 1 load error"
     assert summary(presentation.domain_plugins(rows[:1])) == "1 plugin"
     assert summary(presentation.domain_plugins(())) == "no plugins"
+
+
+def test_reference_and_rename_states(tools):
+    node = tools.explain("connect").node
+    ref = Reference("src/app/db.clj", 9, 7, "definition", "connect", False)
+    found = ReferencesResult(node, 1, ("src/app/db.clj",), (ref,), False)
+    assert summary(presentation.references(found)) == "1 reference in 1 file"
+    assert summary(presentation.references(ReferencesResult(node, 0, (), (), False))) == "no references"
+    edit = RenameEdit("src/app/db.clj", 9, 7, "connect", "open")
+    preview = RenameResult(
+        node, "connect", "open", False, ("src/app/db.clj",), (edit,), (), ("src/app/db.clj:2 :connect",), "-a\n+b\n"
+    )
+    assert summary(presentation.rename(preview)) == "connect → open: preview, 1 edit in 1 file"
+    done = RenameResult(node, "connect", "open", True, ("src/app/db.clj",), (edit,), (), (), "-a\n+b\n")
+    assert summary(presentation.rename(done)) == "connect → open: renamed, 1 edit in 1 file"
+    blocked = RenameResult(node, "connect", "run", False, (), (), ("x already uses `run`.",), (), "")
+    assert summary(presentation.rename(blocked)) == "connect → run: not written, 1 conflict"
+
+
+def test_rename_refuses_a_node_that_is_not_a_clojure_var(tools):
+    # The fixture graph has no `name` metadata, like a graph from before v0.9.93-blockether.4.
+    with pytest.raises(ValueError, match="not a Clojure var"):
+        tools.rename("connect", "open")
+    with pytest.raises(ValueError, match="not a Clojure var"):
+        tools.references("app.core")

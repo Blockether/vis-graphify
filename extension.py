@@ -7,7 +7,7 @@ import blockether.vis.extension as vis
 from vis_graphify import presentation
 from vis_graphify.tools import GraphifyTools
 
-VERSION = "0.2.4"
+VERSION = "0.2.5"
 
 _Tag = Literal["observation", "mutation"]
 
@@ -42,6 +42,8 @@ _bind("explain", "Explain code node", presentation.explain, ("node", "root"))
 _bind("shortest_path", "Find code path", presentation.shortest_path, ("source", "target", "root"))
 _bind("hubs", "List code hubs", presentation.hubs, ("root", "limit", "relation"))
 _bind("affected", "Find affected code", presentation.affected, ("node", "root", "depth"))
+_bind("references", "Find code references", presentation.references, ("node", "root"))
+_bind("rename", "Rename Clojure var", presentation.rename, ("node", "new_name", "root", "apply"), tag="mutation")
 _bind("query", "Query code graph", presentation.query, ("question", "root"), show_start=True)
 _bind("domain", "Map domain flows", presentation.domain, ("root", "plugins"), tag="mutation", show_start=True)
 _bind("domain_plugins", "List domain plugins", presentation.domain_plugins, ("root",))
@@ -51,11 +53,14 @@ PROMPT = """graphify surface active: a code knowledge graph (tree-sitter AST, no
   graphify.status(root=".")                   size and age of the graph
   graphify.search(pattern) · graphify.explain(node) · graphify.hubs()
   graphify.shortest_path(source, target) · graphify.affected(node, depth=2) · graphify.query(question)
+  graphify.references(node)                   every exact site of a Clojure var, with line and column
+  graphify.rename(node, new_name, apply=False) rename a Clojure var everywhere; a preview until apply=True
   graphify.domain(root=".", plugins=None)     commands, queries, events, flows and Malli schemas -> DOMAIN.md
   graphify.domain_plugins(root=".")           domain plugins that apply, such as edd-core
 Call graphify.build() once before the first query, and again after large edits; it re-extracts only changed files.
 Name a node by id, label (`run-tests()`), bare name or Clojure `ns/name`. An ambiguous name raises an error that lists the candidate ids.
 Use the graph to find callers, dependents and paths across files; read the code itself before you edit it.
+To rename a Clojure var, call graphify.rename() first without apply. Read its conflicts, diff and mentions, then call it with apply=True and run graphify.build().
 graphify.domain() reports calls to commands or queries that no service registers, call data that the :consumes schema rejects and broken Malli schemas. Read DOMAIN.md for the diagrams.
 Add a framework as a plugin file in <root>/.graphify/plugins/ or pass its path in `plugins`.
 Results are typed frozen objects."""
@@ -63,7 +68,7 @@ Results are typed frozen objects."""
 vis.register_extension(
     vis.Extension(
         name="vis-graphify",
-        description="Code knowledge graphs with graphify: build, search, explain, paths, hubs, change impact and domain flows (edd-core commands, queries, events, Malli schemas), with full Clojure support.",
+        description="Code knowledge graphs with graphify: build, search, explain, paths, hubs, change impact, exact Clojure references and renames, and domain flows (edd-core commands, queries, events, Malli schemas), with full Clojure support.",
         version=VERSION,
         alias="graphify",
         symbols=[vis.Symbol(GraphifyTools(workspace_root=vis.workspace_root), name="graphify")],

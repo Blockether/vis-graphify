@@ -17,6 +17,8 @@ from vis_graphify.tools import (
     PathResult,
     PluginInfo,
     QueryAnswer,
+    ReferencesResult,
+    RenameResult,
     SearchResult,
 )
 
@@ -155,6 +157,45 @@ def affected(result: ImpactResult) -> vis.ActivityPresentation:
                 lambda i: (str(result.impacts[i].distance), result.impacts[i].via),
             ),
         ),
+    )
+
+
+def references(result: ReferencesResult) -> vis.ActivityPresentation:
+    if not result.references:
+        return vis.ActivityPresentation(
+            "Find code references", "no references", (vis.ActivityText(f"No site names {result.node.label}."),)
+        )
+    more = ", truncated" if result.truncated else ""
+    rows = tuple((f"{ref.file}:{ref.line}:{ref.column}", ref.role, ref.text) for ref in result.references)
+    return vis.ActivityPresentation(
+        "Find code references",
+        f"{_plural(result.total, 'reference')} in {_plural(len(result.files), 'file')}{more}",
+        (
+            vis.ActivityTable(
+                columns=("Location", "Role", "Text"),
+                rows=rows,
+                paths=tuple(ref.file for ref in result.references),
+            ),
+        ),
+    )
+
+
+def rename(result: RenameResult) -> vis.ActivityPresentation:
+    change = f"{result.old} → {result.new}"
+    if result.conflicts:
+        content = tuple(vis.ActivityText(conflict) for conflict in result.conflicts)
+        return vis.ActivityPresentation(
+            "Rename Clojure var", f"{change}: not written, {_plural(len(result.conflicts), 'conflict')}", content
+        )
+    state = "renamed" if result.applied else "preview"
+    content: tuple = (vis.ActivityDiff(_clip(result.diff, 20000), "diff"),) if result.diff else ()
+    if result.mentions:
+        kept = "\n".join(result.mentions[:20]) + ("\n…" if len(result.mentions) > 20 else "")
+        content += (vis.ActivityText(f"Unchanged text that spells {result.old}:\n{kept}"),)
+    return vis.ActivityPresentation(
+        "Rename Clojure var",
+        f"{change}: {state}, {_plural(len(result.edits), 'edit')} in {_plural(len(result.files), 'file')}",
+        content,
     )
 
 

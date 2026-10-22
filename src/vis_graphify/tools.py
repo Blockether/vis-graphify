@@ -5,6 +5,7 @@ This module is plain Python. `extension.py` binds it to Vis.
 
 from __future__ import annotations
 
+import difflib
 import json
 import os
 import shutil
@@ -173,6 +174,96 @@ class PluginInfo:
     name: Annotated[str, "Plugin name; pass it in `plugins`."]
     description: Annotated[str, "What the plugin reads, or the load error."]
     module: Annotated[str, "Python module of the plugin; empty for a load error."]
+
+
+@dataclass(frozen=True)
+class Reference:
+    """One exact site of a Clojure var."""
+
+    file: Annotated[str, "Source file, relative to the project root."]
+    line: Annotated[int, "1-based line."]
+    column: Annotated[int, "1-based column of the name."]
+    role: Annotated[str, "use, definition, declaration, refer, implementation or comment."]
+    text: Annotated[str, "The name as written; a `:rename` alias differs from the var name."]
+    qualified: Annotated[bool, "True for `alias/name` or `ns/name`."]
+
+
+@dataclass(frozen=True)
+class ReferencesResult:
+    """Every site that resolves to one Clojure var."""
+
+    node: Annotated[Node, "The var."]
+    total: Annotated[int, "Count of all sites."]
+    files: Annotated[tuple[str, ...], "Distinct files with a site."]
+    references: Annotated[tuple[Reference, ...], "Sites in file and position order."]
+    truncated: Annotated[bool, "True when `limit` cut the list."]
+
+
+@dataclass(frozen=True)
+class RenameEdit:
+    """One replacement of a name."""
+
+    file: Annotated[str, "Source file, relative to the project root."]
+    line: Annotated[int, "1-based line."]
+    column: Annotated[int, "1-based column of the name."]
+    old: Annotated[str, "Text before, such as `helper` or `->Rec`."]
+    new: Annotated[str, "Text after."]
+
+
+@dataclass(frozen=True)
+class RenameResult:
+    """A rename preview, or the rename that was written."""
+
+    node: Annotated[Node, "The var."]
+    old: Annotated[str, "Old var name."]
+    new: Annotated[str, "New var name."]
+    applied: Annotated[bool, "True when the files were written."]
+    files: Annotated[tuple[str, ...], "Files that the rename changes."]
+    edits: Annotated[tuple[RenameEdit, ...], "Every replacement."]
+    conflicts: Annotated[tuple[str, ...], "Reasons that make the rename unsafe. With a conflict, nothing is written."]
+    mentions: Annotated[
+        tuple[str, ...], "`file:line text` of strings, keywords and data that spell the old name and stay."
+    ]
+    diff: Annotated[str, "Unified diff of the change."]
+
+
+CLOJURE_SUFFIXES = (".clj", ".cljs", ".cljc", ".bb", ".edn")
+
+
+def _clojure_var(graph: g.Graph, node_id: str) -> tuple[str, str]:
+    """The namespace and name of a Clojure var node."""
+    raw = graph.nodes.get(node_id, {})
+    meta = raw.get("metadata") or {}
+    if meta.get("language") != "clojure" or meta.get("kind") != "var" or not meta.get("module") or not meta.get("name"):
+        label = raw.get("label", node_id)
+        raise ValueError(f"{label} is not a Clojure var. References and renames support Clojure vars only.")
+    return str(meta["module"]), str(meta["name"])
+
+
+def _clojure_files(graph: g.Graph, root: Path) -> list[Path]:
+    """The Clojure source files of the graph."""
+    files = {str(raw.get("source_file") or "") for raw in graph.nodes.values()}
+    return sorted(root / f for f in files if f.lower().endswith(CLOJURE_SUFFIXES))
+
+
+def _relative(root: Path, file: str) -> str:
+    path = Path(file)
+    return path.relative_to(root).as_posix() if path.is_relative_to(root) else file
+
+
+def _unified_diff(root: Path, contents: dict) -> str:
+    chunks = []
+    for file, (old, new) in sorted(contents.items()):
+        name = _relative(root, file)
+        chunks.extend(
+            difflib.unified_diff(
+                old.decode("utf-8", "replace").splitlines(keepends=True),
+                new.decode("utf-8", "replace").splitlines(keepends=True),
+                f"a/{name}",
+                f"b/{name}",
+            )
+        )
+    return "".join(chunks)
 
 
 def _line(location: str) -> int | None:
@@ -429,6 +520,68 @@ class GraphifyTools:
         impacts = tuple(Impact(_node(graph, other), distance, link.relation) for other, distance, link in rows[:limit])
         files = tuple(sorted({impact.node.file for impact in impacts if impact.node.file}))
         return ImpactResult(_node(graph, node_id), depth, files, impacts, len(rows) > limit)
+
+    def references(self, node: str, root: str = ".", limit: int = 200) -> ReferencesResult:
+        """List every exact site of a Clojure var: uses, its definition and namespace refers.
+
+        Resolution follows aliases, `:refer`, `:rename` and locals, so a parameter or
+        keyword with the same name never counts. Each site has its line and column.
+        The files come from the graph; run graphify.build() after you add files.
+
+        Args:
+            node: The var: id, label or `ns/name`.
+            root: Project directory, relative to the workspace root.
+            limit: Maximum count of returned sites.
+        """
+        from graphify import clojure_refactor
+
+        path = self._root(root)
+        graph = g.load(path)
+        node_id = g.resolve(graph, node)
+        ns, name = _clojure_var(graph, node_id)
+        sites = clojure_refactor.references(ns, name, _clojure_files(graph, path))
+        found = tuple(Reference(_relative(path, s.file), s.line, s.col, s.role, s.text, s.qualified) for s in sites)
+        files = tuple(sorted({ref.file for ref in found}))
+        return ReferencesResult(_node(graph, node_id), len(found), files, found[:limit], len(found) > limit)
+
+    def rename(self, node: str, new_name: str, root: str = ".", apply: bool = False) -> RenameResult:
+        """Rename a Clojure var at every site that resolves to it, across files.
+
+        Without `apply`, nothing is written: read `conflicts`, `diff` and `mentions`,
+        then call again with `apply=True`. A conflict blocks the write: an invalid
+        name, a var that already has the new name, or a file where the new name
+        would bind to a local, another var or `clojure.core`. Strings, keywords and
+        quoted data stay; `mentions` lists them. Run graphify.build() after a rename.
+
+        Args:
+            node: The var: id, label or `ns/name`.
+            new_name: The new name, without a namespace.
+            root: Project directory, relative to the workspace root.
+            apply: Write the files when the plan has no conflict.
+        """
+        from graphify import clojure_refactor
+
+        path = self._root(root)
+        graph = g.load(path)
+        node_id = g.resolve(graph, node)
+        ns, name = _clojure_var(graph, node_id)
+        plan = clojure_refactor.plan_rename(ns, name, new_name, _clojure_files(graph, path))
+        contents = clojure_refactor.rewrite(plan) if plan.edits else {}
+        applied = False
+        if apply and not plan.conflicts:
+            clojure_refactor.apply_rename(plan)
+            applied = True
+        return RenameResult(
+            node=_node(graph, node_id),
+            old=name,
+            new=new_name,
+            applied=applied,
+            files=tuple(_relative(path, f) for f in plan.files),
+            edits=tuple(RenameEdit(_relative(path, e.file), e.line, e.col, e.old, e.new) for e in plan.edits),
+            conflicts=tuple(c.replace(f"{path}/", "") for c in plan.conflicts),
+            mentions=tuple(f"{_relative(path, m.file)}:{m.line} {m.text}" for m in plan.mentions),
+            diff=_unified_diff(path, contents),
+        )
 
     def query(self, question: str, root: str = ".", budget: int = 2000, timeout_s: int = 120) -> QueryAnswer:
         """Ask graphify a natural-language question; it returns the relevant subgraph as text.

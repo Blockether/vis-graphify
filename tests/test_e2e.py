@@ -201,3 +201,41 @@ def test_real_schema_and_payload_checks(tmp_path):
     assert errors["payload-invalid"].file == "orders-svc/src/orders/main.clj"
     assert "attrs.qty: is 0, expected at least 1" in errors["payload-invalid"].message
     assert "`:stirng`" in errors["schema-unknown-type"].message
+
+
+def _rename_project(tmp_path):
+    src = tmp_path / "src" / "demo"
+    src.mkdir(parents=True)
+    (src / "db.clj").write_text("(ns demo.db)\n\n(defn connect [url] {:url url})\n")
+    (src / "core.clj").write_text(
+        "(ns demo.core\n  (:require [demo.db :as db :refer [connect]]))\n\n"
+        "(defn run [url]\n  (db/connect (connect url)))\n\n"
+        "(defn local [connect] (connect :connect))\n"
+    )
+    tools = GraphifyTools(workspace_root=lambda: str(tmp_path))
+    assert tools.build(cluster=False, timeout_s=600).ok
+    return tools, src
+
+
+def test_real_references_and_rename(tmp_path):
+    tools, src = _rename_project(tmp_path)
+    found = tools.references("demo.db/connect")
+    assert found.files == ("src/demo/core.clj", "src/demo/db.clj")
+    assert sorted(ref.role for ref in found.references) == ["definition", "refer", "use", "use"]
+    preview = tools.rename("demo.db/connect", "open-conn")
+    assert not preview.applied and preview.conflicts == ()
+    assert "-  (db/connect (connect url)))" in preview.diff and "+  (db/open-conn (open-conn url)))" in preview.diff
+    assert "connect url" in (src / "core.clj").read_text()  # a preview writes nothing
+    done = tools.rename("demo.db/connect", "open-conn", apply=True)
+    assert done.applied and done.files == ("src/demo/core.clj", "src/demo/db.clj")
+    core = (src / "core.clj").read_text()
+    assert ":refer [open-conn]" in core and "(defn local [connect] (connect :connect))" in core
+    assert "src/demo/core.clj:7 :connect" in done.mentions
+
+
+def test_real_rename_conflict_writes_nothing(tmp_path):
+    tools, src = _rename_project(tmp_path)
+    before = (src / "core.clj").read_text()
+    blocked = tools.rename("demo.db/connect", "run", apply=True)
+    assert not blocked.applied and any("already uses `run`" in c for c in blocked.conflicts)
+    assert (src / "core.clj").read_text() == before

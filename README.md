@@ -9,6 +9,8 @@ namespaces, vars, `:require` aliases, cross-file calls, protocols, records and C
 
 - You want to know who calls a function, across files: use `graphify.explain`.
 - You plan a change and want to see what it can break: use `graphify.affected`.
+- You want to rename a Clojure var everywhere without touching locals, keywords or strings with the
+  same name: use `graphify.rename`. See [Rename a Clojure var](#rename-a-clojure-var).
 - You want to see how two parts of the code connect: use `graphify.shortest_path`.
 - You join an unknown codebase and want its central code first: use `graphify.hubs`.
 - You want to see how commands, queries and events flow between your services, or find calls to
@@ -38,6 +40,8 @@ The agent uses these tools in its Python sandbox:
 | `graphify.shortest_path("a", "b")` | The shortest chain of edges between two nodes. |
 | `graphify.hubs(limit=20)` | The most called nodes. |
 | `graphify.affected("my.ns/run", depth=2)` | Callers, importers and users, with their files. |
+| `graphify.references("my.ns/run")` | Every exact site of a Clojure var: file, line, column and role. |
+| `graphify.rename("my.ns/run", "start")` | A rename preview with a diff and conflicts. `apply=True` writes the files. |
 | `graphify.query("how does a session start")` | graphify's own keyword and breadth-first walk, as text. |
 | `graphify.domain(root=".")` | The domain model: services, commands, queries, events, links, schemas and findings. Writes `DOMAIN.md`. |
 | `graphify.domain_plugins(root=".")` | The domain plugins that graphify can load for the project. |
@@ -46,6 +50,26 @@ You can name a node by its id, its label (`run()`), its bare name (`run`) or its
 (`my.ns/run`). If a name matches more than one node, the error lists the candidate ids.
 
 Add `graphify-out/` to your `.gitignore`.
+
+## Rename a Clojure var
+
+Ask in chat, for example "rename `my.ns/run` to `start`". The agent first calls
+`graphify.rename("my.ns/run", "start")`. This call writes nothing. It returns:
+
+- `diff`: the change in each file;
+- `conflicts`: why the rename is unsafe, if it is. Examples are a name that the namespace already
+  defines, or a file where `start` already means a local, another var or a `clojure.core` function;
+- `mentions`: strings, keywords and quoted data that spell the old name. They stay unchanged.
+
+When the preview has no conflict, `graphify.rename("my.ns/run", "start", apply=True)` writes the
+files. Then run `graphify.build()` to update the graph. A file that changed after the preview stops
+the write.
+
+The rename uses the same symbol resolution as the graph. It follows `:as` aliases, `:refer`,
+`:refer :all` and `:rename`, and skips parameters, `let` bindings and destructured names. It also
+changes `declare`, `defmethod`, protocol implementations, `#'var`, `resolve`, syntax-quote and rich
+`(comment ...)` forms. A record rename also changes its `->Rec` and `map->Rec` factories.
+`graphify.references()` lists the same sites without a change.
 
 ## Domain flows
 
