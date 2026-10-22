@@ -46,14 +46,17 @@ def test_rename_text_is_short():
     mentions = tuple(f"misc/r{i}.rs:{i} checksum (another symbol)" for i in range(12))
     preview = RenameResult(node, "checksum", "crc32", False, ("f0.rs",), edits, (), mentions, 500, diff)
     text = str(preview)
-    assert text.startswith("Preview checksum -> crc32: 3 edits in 1 files.")
+    assert text.startswith("Preview checksum -> crc32: 3 edits in 1 files. Call again with apply=True to write:")
     assert "… 40 more lines in `diff`." in text and "… 2 more in `mentions`." in text
     assert "Kept 500 mentions in strings, comments and keywords." in text
     assert len(text) < 1500
     blocked = dataclasses.replace(preview, conflicts=("f0.rs already uses crc32",))
     assert str(blocked).splitlines()[-1] == "f0.rs already uses crc32"
     applied = dataclasses.replace(preview, applied=True)
-    assert str(applied).splitlines()[:2] == ["Renamed checksum -> crc32: 3 edits in 1 files.", "f0.rs"]
+    assert str(applied).splitlines()[:2] == ["Renamed checksum -> crc32: 3 edits in 1 files:", "+line 0"]
+    changed = dataclasses.replace(applied, changes=tuple(f"f{i}.rs:1  crc32()" for i in range(90)))
+    assert str(changed).splitlines()[1:3] == ["f0.rs:1  crc32()", "f1.rs:1  crc32()"]
+    assert "… 10 more in `changes`." in str(changed) and "+line" not in str(changed)
 
 
 def test_build_failure_raises_with_output(project):

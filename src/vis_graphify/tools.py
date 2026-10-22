@@ -285,14 +285,15 @@ class RenameResult:
     ]
     text_mentions: Annotated[int, "Count of strings, comments and keywords that spell the old name and stay."]
     diff: Annotated[str, "Unified diff of the change."]
+    changes: Annotated[tuple[str, ...], "`file:line text` of each changed line, as it reads after the change."] = ()
 
     def __str__(self) -> str:
-        """A short summary: counts, conflicts, code mentions and the start of the diff."""
+        """A short summary: counts, conflicts, each changed line and code mentions."""
         change = f"{self.old} -> {self.new}: {len(self.edits)} edits in {len(self.files)} files"
         if self.conflicts:
             return "\n".join([f"Blocked {change}. Nothing was written. Conflicts:", *self.conflicts])
-        lines = [f"Renamed {change}." if self.applied else f"Preview {change}. Call again with apply=True to write."]
-        lines.append("\n".join(self.files) if self.applied else _clip_lines(self.diff, 60))
+        lines = [f"Renamed {change}:" if self.applied else f"Preview {change}. Call again with apply=True to write:"]
+        lines.append(_change_lines(self.changes) if self.changes else _clip_lines(self.diff, 60))
         if self.mentions:
             more = [f"… {len(self.mentions) - 10} more in `mentions`."] if len(self.mentions) > 10 else []
             lines += [f"Other code that spells {self.old} and stays:", *self.mentions[:10], *more]
@@ -323,16 +324,16 @@ class SignatureResult:
     edits: Annotated[tuple[CallEdit, ...], "Every insertion."]
     conflicts: Annotated[tuple[str, ...], "Sites that block the change. With a conflict, nothing is written."]
     diff: Annotated[str, "Unified diff of the change."]
+    changes: Annotated[tuple[str, ...], "`file:line text` of each changed line, as it reads after the change."] = ()
 
     def __str__(self) -> str:
-        """A short summary: counts, conflicts and the start of the diff."""
+        """A short summary: counts, conflicts and each changed line."""
         calls = sum(1 for edit in self.edits if edit.kind == "call")
         change = f"parameter {self.parameter} of {self.node.label}: {calls} calls in {len(self.files)} files"
         if self.conflicts:
             return "\n".join([f"Blocked {change}. Nothing was written. Conflicts:", *self.conflicts])
-        if self.applied:
-            return "\n".join([f"Added {change}.", *self.files])
-        return f"Preview {change}. Call again with apply=True to write.\n{_clip_lines(self.diff, 60)}"
+        head = f"Added {change}:" if self.applied else f"Preview {change}. Call again with apply=True to write:"
+        return f"{head}\n{_change_lines(self.changes) if self.changes else _clip_lines(self.diff, 60)}"
 
 
 def _relative(root: Path, file: str) -> str:
@@ -361,6 +362,22 @@ def _listing(header: str, rows, field: str, limit: int = 40) -> str:
     if len(rows) > limit:
         lines.append(f"  … {len(rows) - limit} more in `{field}`.")
     return "\n".join(lines) if rows else f"{header} none"
+
+
+def _change_lines(changes: tuple[str, ...], limit: int = 80) -> str:
+    """The first `limit` changed lines, with a count of the rest."""
+    more = [f"… {len(changes) - limit} more in `changes`."] if len(changes) > limit else []
+    return "\n".join([*changes[:limit], *more])
+
+
+def _changed(root: Path, new: dict[str, bytes], sites) -> tuple[str, ...]:
+    """`file:line text` of each `(file, line)` site, read from the new bytes of its file."""
+    rows = {}
+    for file, line in sites:
+        lines = new[file].decode("utf-8", "replace").splitlines() if file in new else []
+        if 0 < line <= len(lines):
+            rows[(_relative(root, file), line)] = lines[line - 1].strip()
+    return tuple(f"{file}:{line}  {text}" for (file, line), text in sorted(rows.items()))
 
 
 def _clip_lines(text: str, limit: int) -> str:
@@ -735,6 +752,7 @@ class GraphifyTools:
             mentions=tuple(f"{_relative(path, m.file)}:{m.line} {m.text}" for m in plan.mentions if m.kind == "symbol"),
             text_mentions=sum(1 for m in plan.mentions if m.kind != "symbol"),
             diff=_unified_diff(path, contents),
+            changes=_changed(path, {f: n for f, (_, n) in contents.items()}, [(e.file, e.line) for e in plan.edits]),
         )
 
     def add_parameter(
@@ -783,6 +801,7 @@ class GraphifyTools:
             edits=tuple(CallEdit(_relative(path, i.file), i.line, i.kind, i.text) for i in plan.inserts),
             conflicts=tuple(c.replace(f"{path}/", "") for c in plan.conflicts),
             diff=_unified_diff(path, {str(path / file): (old[file], data) for file, data in new.items()}),
+            changes=_changed(path, new, [(i.file, i.line) for i in plan.inserts]),
         )
 
     def domain(

@@ -292,6 +292,7 @@ def test_real_add_parameter_across_languages(tmp_path):
     assert "def helper(x, scale=1):" in (tmp_path / "py/util.py").read_text(encoding="utf-8")
     done = tools.add_parameter("formatName()", "upper: boolean", "true", apply=True)
     assert done.applied and done.files == ("web/main.ts", "web/util.ts")
+    assert "web/main.ts:3  export const a = formatName(' x ', true);" in str(done)
     assert "formatName(' x ', true)" in (tmp_path / "web/main.ts").read_text(encoding="utf-8")
     assert tools.add_parameter("demo.db/connect", "opts", "{}", apply=True).applied
     assert "(defn connect [url opts]" in (tmp_path / "src/demo/db.clj").read_text(encoding="utf-8")

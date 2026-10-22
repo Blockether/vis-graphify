@@ -7,7 +7,7 @@ import blockether.vis.extension as vis
 from vis_graphify import presentation
 from vis_graphify.tools import GraphifyTools, HubsResult, ImpactResult, ReferencesResult, SearchResult
 
-VERSION = "0.4.0"
+VERSION = "0.4.1"
 
 _Tag = Literal["observation", "mutation"]
 
@@ -68,9 +68,10 @@ Pick the call for the question; each answers in one call:
   graphify.add_parameter(node, "currency string", '"EUR"', apply=True)  add a last parameter and pass the argument at every call
   graphify.explain(node) · graphify.shortest_path(source, target) · graphify.search(pattern) · graphify.hubs()
   graphify.domain()                           edd-core commands, queries, events and Malli schemas -> DOMAIN.md
-These calls skip strings, comments and other symbols with the same name. Use them, not grep or reading every file.
+These calls skip strings, comments and other symbols with the same name. Use them first, not ls, grep or reading every file.
 Name a node by id, label, bare name, qualified name (`ns/name`, `pkg.Name`, `Class.method`, `crate::mod::name`) or `file::name`. An ambiguous name raises an error that lists each candidate with its location.
 print(result) gives a short summary with file:line locations; read a field only for more detail.
+print(rename or add_parameter result) lists every changed line: check the change there, then run the project checks. Do not cat or grep the files again.
 Results are typed frozen objects; search, references, affected and hubs results iterate."""
 
 vis.register_extension(
