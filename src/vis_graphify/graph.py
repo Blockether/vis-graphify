@@ -26,13 +26,15 @@ class NodeNotFound(LookupError):
 class AmbiguousNode(ValueError):
     """More than one node matches a reference."""
 
-    def __init__(self, reference: str, candidates: list[str]):
+    def __init__(self, reference: str, candidates: list[str], places: dict[str, str] | None = None):
         self.reference = reference
         self.candidates = candidates
-        shown = ", ".join(candidates[:10])
-        more = f" and {len(candidates) - 10} more" if len(candidates) > 10 else ""
+        places = places or {}
+        shown = "\n".join(f"  {node_id}  {places.get(node_id, '')}".rstrip() for node_id in candidates[:10])
+        more = f"\n  … {len(candidates) - 10} more" if len(candidates) > 10 else ""
         super().__init__(
-            f"{reference!r} matches {len(candidates)} nodes: {shown}{more}. Pass a node id or a more exact label."
+            f"{reference!r} matches {len(candidates)} nodes:\n{shown}{more}\n"
+            "Pass one node id, or a qualified name such as `pkg.Name` or `Class.method`."
         )
 
 
@@ -124,7 +126,8 @@ def resolve(graph: Graph, reference: str) -> str:
     trailing `()`, the `module/name` of the node metadata (this also finds
     Clojure protocol methods, labelled `.-method()`), a qualified name (`ns/name`,
     `module.name`, `Class.method` or `crate::module::name`), then a
-    case-insensitive substring of the label.
+    case-insensitive substring of the label. A node without a source file, such as
+    an external import, counts only when no defined node matches.
 
     Raises:
         NodeNotFound: No node matches.
@@ -144,11 +147,20 @@ def resolve(graph: Graph, reference: str) -> str:
     )
     for rule in rules:
         found = sorted(node_id for node_id, node in graph.nodes.items() if rule(node))
+        # A node without a source file, such as an external import, loses to a defined node.
+        found = [node_id for node_id in found if graph.nodes[node_id].get("source_file")] or found
         if len(found) == 1:
             return found[0]
         if found:
-            raise AmbiguousNode(reference, found)
+            raise AmbiguousNode(reference, found, {node_id: _place(graph.nodes[node_id]) for node_id in found})
     raise NodeNotFound(f"No node matches {reference!r}. Try graphify.search().")
+
+
+def _place(node: dict) -> str:
+    """`label at file:line` of a raw node, for error messages."""
+    where = node.get("source_file") or ""
+    line = node.get("source_location") or ""
+    return f"{node.get('label', '')} at {where}:{line.lstrip('Ll')}" if where else node.get("label", "")
 
 
 def _metadata_name(node: dict) -> str | None:

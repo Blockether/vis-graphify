@@ -45,10 +45,11 @@ The agent uses these tools in its Python sandbox:
 | `graphify.rename("my.ns/run", "start")` | A rename preview with a diff and conflicts. `apply=True` writes the files and updates the graph. |
 | `graphify.domain(root=".")` | The domain model: services, commands, queries, events, links, schemas and findings. Writes `DOMAIN.md`. |
 
-You can name a node by its id, its label (`run()`), its bare name (`run`) or its Clojure name
-(`my.ns/run`). If a name matches more than one node, the error lists the candidate ids.
+You can name a node by its id, its label (`run()`), its bare name (`run`) or a qualified name
+(`my.ns/run`, `orders.Order`, `Ledger.post` or `crate::util::sum`). If a name matches more than one
+node, the error lists each candidate id with its file and line.
 
-Add `graphify-out/` to your `.gitignore`.
+`graphify.build()` writes `graphify-out/.gitignore`, so git and `grep` skip the graph files.
 
 ## Rename a symbol
 
@@ -59,7 +60,8 @@ Ask in chat, for example "rename `parse_config` to `load_config`". The agent fir
 - `conflicts`: why the rename is unsafe, if it is. Examples are a file that already uses the new
   name, a method that overrides a base class or implements a trait, or a common method name such as
   `get` on receivers of unknown type;
-- `mentions`: strings, comments and other symbols that spell the old name. They stay unchanged.
+- `mentions`: other code symbols that spell the old name. They stay unchanged; check them.
+- `text_mentions`: the count of strings, comments and keywords that spell the old name. They stay unchanged.
 
 When the preview has no conflict, `graphify.rename("parse_config()", "load_config", apply=True)`
 writes the files and updates the graph. A file that changed after the preview stops the write.

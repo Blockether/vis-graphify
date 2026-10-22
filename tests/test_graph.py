@@ -38,6 +38,14 @@ def test_resolve_ambiguous_lists_candidates(project):
     with pytest.raises(g.AmbiguousNode) as error:
         g.resolve(g.load(project), "run")
     assert error.value.candidates == ["src_app_core_run", "src_app_web_run"]
+    assert "src_app_core_run  run() at src/app/core.clj:" in str(error.value)
+
+
+def test_resolve_prefers_defined_node_over_external(project):
+    data = json.loads((project / "graphify-out/graph.json").read_text())
+    data["nodes"].append({"id": "connect_external", "label": "connect()"})
+    (project / "graphify-out/graph.json").write_text(json.dumps(data))
+    assert g.resolve(g.load(project), "connect()") == "src_app_db_connect"
 
 
 def test_resolve_missing(project):

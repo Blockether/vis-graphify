@@ -42,7 +42,7 @@ def test_success_states(tools, project):
     )
     assert summary(presentation.hubs(tools.hubs(limit=2))) == "top 2, led by run()"
     assert summary(presentation.affected(tools.affected("connect", depth=3))) == "3 dependents in 3 files"
-    build = BuildResult(str(project), "g.json", True, 0, 6, 4, 1.5, "done")
+    build = BuildResult(str(project), "g.json", 6, 4, 1.5)
     assert summary(presentation.build(build)) == "6 nodes, 4 edges in 1.5 s"
 
 
@@ -147,12 +147,12 @@ def test_reference_and_rename_states(tools):
     assert summary(presentation.references(ReferencesResult(node, 0, (), (), False))) == "no references"
     edit = RenameEdit("src/app/db.clj", 9, 7, "connect", "open")
     preview = RenameResult(
-        node, "connect", "open", False, ("src/app/db.clj",), (edit,), (), ("src/app/db.clj:2 :connect",), "-a\n+b\n"
+        node, "connect", "open", False, ("src/app/db.clj",), (edit,), (), ("src/app/db.clj:2 connect",), 1, "-a\n+b\n"
     )
     assert summary(presentation.rename(preview)) == "connect → open: preview, 1 edit in 1 file"
-    done = RenameResult(node, "connect", "open", True, ("src/app/db.clj",), (edit,), (), (), "-a\n+b\n")
+    done = RenameResult(node, "connect", "open", True, ("src/app/db.clj",), (edit,), (), (), 0, "-a\n+b\n")
     assert summary(presentation.rename(done)) == "connect → open: renamed, 1 edit in 1 file"
-    blocked = RenameResult(node, "connect", "run", False, (), (), ("x already uses `run`.",), (), "")
+    blocked = RenameResult(node, "connect", "run", False, (), (), ("x already uses `run`.",), (), 0, "")
     assert summary(presentation.rename(blocked)) == "connect → run: not written, 1 conflict"
 
 

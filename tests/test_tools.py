@@ -1,3 +1,4 @@
+import dataclasses
 import json
 import os
 import subprocess
@@ -5,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from vis_graphify.tools import BUNDLED_PLUGINS, GraphifyTools, graphify_command
+from vis_graphify.tools import BUNDLED_PLUGINS, GraphifyTools, Node, RenameEdit, RenameResult, graphify_command
 
 
 def tools_for(root, runner=None):
@@ -33,8 +34,26 @@ def test_build_runs_graphify_update_and_counts(project):
     assert argv[-4:] == ["update", str(project.resolve()), "--force", "--no-cluster"]
     assert kwargs["cwd"] == str(project.resolve())
     assert "PYTHONPATH" not in kwargs["env"]
-    assert (result.ok, result.nodes, result.edges) == (True, 6, 4)
-    assert "done" in result.output
+    assert (result.nodes, result.edges) == (6, 4)
+    assert str(result) == "Graph built: 6 nodes, 4 edges in %g s." % result.seconds
+    assert (project / "graphify-out" / ".gitignore").read_text() == "*\n"
+
+
+def test_rename_text_is_short():
+    node = Node("n", "checksum()", "util.rs", 1, "function", None)
+    edits = tuple(RenameEdit(f"f{i}.rs", 1, 1, "checksum", "crc32") for i in range(3))
+    diff = "\n".join(f"+line {i}" for i in range(100))
+    mentions = tuple(f"misc/r{i}.rs:{i} checksum (another symbol)" for i in range(12))
+    preview = RenameResult(node, "checksum", "crc32", False, ("f0.rs",), edits, (), mentions, 500, diff)
+    text = str(preview)
+    assert text.startswith("Preview checksum -> crc32: 3 edits in 1 files.")
+    assert "… 40 more lines in `diff`." in text and "… 2 more in `mentions`." in text
+    assert "Kept 500 mentions in strings, comments and keywords." in text
+    assert len(text) < 1500
+    blocked = dataclasses.replace(preview, conflicts=("f0.rs already uses crc32",))
+    assert str(blocked).splitlines()[-1] == "f0.rs already uses crc32"
+    applied = dataclasses.replace(preview, applied=True)
+    assert str(applied).splitlines()[:2] == ["Renamed checksum -> crc32: 3 edits in 1 files.", "f0.rs"]
 
 
 def test_build_failure_raises_with_output(project):

@@ -50,9 +50,7 @@ def build(result: BuildResult) -> vis.ActivityPresentation:
     return vis.ActivityPresentation(
         "Build code graph",
         f"{result.nodes} nodes, {result.edges} edges in {result.seconds:g} s",
-        (vis.ActivityText(result.graph_path), vis.ActivityCode(_clip(result.output, 4000)))
-        if result.output
-        else (vis.ActivityText(result.graph_path),),
+        (vis.ActivityText(result.graph_path),),
     )
 
 
@@ -189,7 +187,7 @@ def rename(result: RenameResult) -> vis.ActivityPresentation:
     content: tuple = (vis.ActivityDiff(_clip(result.diff, 8000), "diff"),) if result.diff else ()
     if result.mentions:
         kept = "\n".join(result.mentions[:10]) + ("\n…" if len(result.mentions) > 10 else "")
-        content += (vis.ActivityText(f"Unchanged text that spells {result.old}:\n{kept}"),)
+        content += (vis.ActivityText(f"Other code that spells {result.old} and stays:\n{kept}"),)
     return vis.ActivityPresentation(
         "Rename symbol",
         f"{change}: {state}, {_plural(len(result.edits), 'edit')} in {_plural(len(result.files), 'file')}",

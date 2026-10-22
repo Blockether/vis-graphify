@@ -44,16 +44,16 @@ class Edge:
 
 @dataclass(frozen=True)
 class BuildResult:
-    """The outcome of one graph build."""
+    """The outcome of one graph build. A failed build raises an error with the graphify output."""
 
     root: Annotated[str, "Absolute project root."]
     graph_path: Annotated[str, "Absolute path of graph.json."]
-    ok: Annotated[bool, "True when graphify exited with status 0."]
-    exit_code: Annotated[int, "graphify exit status."]
     nodes: Annotated[int, "Node count after the build."]
     edges: Annotated[int, "Edge count after the build."]
     seconds: Annotated[float, "Wall time of the build."]
-    output: Annotated[str, "Last lines of graphify output."]
+
+    def __str__(self) -> str:
+        return f"Graph built: {self.nodes} nodes, {self.edges} edges in {self.seconds:g} s."
 
 
 @dataclass(frozen=True)
@@ -208,9 +208,24 @@ class RenameResult:
     edits: Annotated[tuple[RenameEdit, ...], "Every replacement."]
     conflicts: Annotated[tuple[str, ...], "Reasons that make the rename unsafe. With a conflict, nothing is written."]
     mentions: Annotated[
-        tuple[str, ...], "`file:line text` of strings, comments and other symbols that spell the old name and stay."
+        tuple[str, ...], "`file:line text` of other code symbols that spell the old name and stay. Check them."
     ]
+    text_mentions: Annotated[int, "Count of strings, comments and keywords that spell the old name and stay."]
     diff: Annotated[str, "Unified diff of the change."]
+
+    def __str__(self) -> str:
+        """A short summary: counts, conflicts, code mentions and the start of the diff."""
+        change = f"{self.old} -> {self.new}: {len(self.edits)} edits in {len(self.files)} files"
+        if self.conflicts:
+            return "\n".join([f"Blocked {change}. Nothing was written. Conflicts:", *self.conflicts])
+        lines = [f"Renamed {change}." if self.applied else f"Preview {change}. Call again with apply=True to write."]
+        lines.append("\n".join(self.files) if self.applied else _clip_lines(self.diff, 60))
+        if self.mentions:
+            more = [f"… {len(self.mentions) - 10} more in `mentions`."] if len(self.mentions) > 10 else []
+            lines += [f"Other code that spells {self.old} and stays:", *self.mentions[:10], *more]
+        if self.text_mentions:
+            lines.append(f"Kept {self.text_mentions} mentions in strings, comments and keywords.")
+        return "\n".join(lines)
 
 
 def _relative(root: Path, file: str) -> str:
@@ -221,6 +236,14 @@ def _relative(root: Path, file: str) -> str:
 def _raw(graph: g.Graph) -> dict:
     """The graph.json shape that `graphify.refactor` reads, from the cached graph."""
     return {"nodes": list(graph.nodes.values()), "links": [dataclasses.asdict(link) for link in graph.links]}
+
+
+def _clip_lines(text: str, limit: int) -> str:
+    """The first `limit` lines of `text`, with a count of the lines that were cut."""
+    lines = text.splitlines()
+    if len(lines) <= limit:
+        return text.rstrip("\n")
+    return "\n".join(lines[:limit] + [f"… {len(lines) - limit} more lines in `diff`."])
 
 
 def _unified_diff(root: Path, contents: dict) -> str:
@@ -294,6 +317,13 @@ def _child_env() -> dict[str, str]:
     return env
 
 
+def _ignore_output(out: Path) -> None:
+    """Keep graphify output out of git, grep and ls: add `.gitignore` with `*` unless one exists."""
+    ignore = out / ".gitignore"
+    if out.is_dir() and not ignore.exists():
+        ignore.write_text("*\n", encoding="utf-8")
+
+
 def _tail(text: str, lines: int = 40) -> str:
     return "\n".join(text.strip().splitlines()[-lines:])
 
@@ -341,8 +371,9 @@ class GraphifyTools:
     ) -> BuildResult:
         """Build or update the code graph of a project with graphify (AST only, no LLM).
 
-        Writes `<root>/graphify-out/graph.json` and `GRAPH_REPORT.md`. A later
-        build re-extracts only changed files. Supports Clojure, Python,
+        Writes `<root>/graphify-out/graph.json` and `GRAPH_REPORT.md`, with a `.gitignore`
+        that keeps them out of git and grep. A later build re-extracts only changed
+        files. Supports Clojure, Python,
         JavaScript, TypeScript, Java, Go, Rust and the other graphify languages.
         When a domain plugin applies, the graph also gets its commands, queries
         and events as `domain:<kind>:<service>:<name>` nodes.
@@ -355,7 +386,7 @@ class GraphifyTools:
             plugins: Extra domain plugin specs: a name, `module:attr` or a `.py` file or directory.
 
         Returns:
-            BuildResult with the counts and the last lines of graphify output.
+            BuildResult with the counts. A failed build raises an error with the graphify output.
         """
         return self._update(self._root(root), force, cluster, timeout_s, plugins)
 
@@ -388,15 +419,13 @@ class GraphifyTools:
             nodes, edges = len(built.nodes), len(built.links)
         if done.returncode != 0:
             raise RuntimeError(f"graphify exited with status {done.returncode}.\n{output}")
+        _ignore_output(g.graph_path(path).parent)
         return BuildResult(
             root=str(path),
             graph_path=str(g.graph_path(path)),
-            ok=True,
-            exit_code=done.returncode,
             nodes=nodes,
             edges=edges,
             seconds=seconds,
-            output=output,
         )
 
     def status(self, root: str = ".") -> GraphStatus:
@@ -530,11 +559,11 @@ class GraphifyTools:
         """Rename a symbol at every site that resolves to it, across files.
 
         Works for functions, methods, classes and Clojure vars in every language with a
-        tree-sitter grammar. Without `apply`, nothing is written: read `conflicts`, `diff`
-        and `mentions`, then call again with `apply=True`. A conflict blocks the write: an
-        invalid name, a file that already uses the new name, an override or trait method,
-        or a common method name on receivers of unknown type. Strings and comments stay;
-        `mentions` lists them. A written rename updates the graph.
+        tree-sitter grammar. Without `apply`, nothing is written: print the preview, check
+        `conflicts` and `mentions`, then call again with `apply=True`. A conflict blocks the
+        write: an invalid name, a file that already uses the new name, an override or trait
+        method, or a common method name on receivers of unknown type. Strings, comments and
+        keywords stay; `text_mentions` counts them. A written rename updates the graph.
 
         Args:
             node: The symbol: id, label or a qualified name (`ns/name`, `module.name`, `Class.method`, `crate::m::name`).
@@ -562,7 +591,8 @@ class GraphifyTools:
             files=tuple(_relative(path, f) for f in plan.files),
             edits=tuple(RenameEdit(_relative(path, e.file), e.line, e.col, e.old, e.new) for e in plan.edits),
             conflicts=tuple(c.replace(f"{path}/", "") for c in plan.conflicts),
-            mentions=tuple(f"{_relative(path, m.file)}:{m.line} {m.text}" for m in plan.mentions),
+            mentions=tuple(f"{_relative(path, m.file)}:{m.line} {m.text}" for m in plan.mentions if m.kind == "symbol"),
+            text_mentions=sum(1 for m in plan.mentions if m.kind != "symbol"),
             diff=_unified_diff(path, contents),
         )
 

@@ -5,11 +5,16 @@ from typing import Literal
 import blockether.vis.extension as vis
 
 from vis_graphify import presentation
-from vis_graphify.tools import GraphifyTools
+from vis_graphify.tools import GraphifyTools, ImpactResult, ReferencesResult, SearchResult
 
-VERSION = "0.3.1"
+VERSION = "0.3.2"
 
 _Tag = Literal["observation", "mutation"]
+
+# `for x in result` and `len(result)` read the main list of these results.
+vis.sequence(field="nodes")(SearchResult)
+vis.sequence(field="references")(ReferencesResult)
+vis.sequence(field="impacts")(ImpactResult)
 
 
 def _bind(name, label, build, arguments=(), *, tag: _Tag = "observation", show_start=False):
@@ -56,9 +61,10 @@ PROMPT = """graphify surface active: a code knowledge graph (tree-sitter AST, no
   graphify.domain(root=".", plugins=None)     commands, queries, events, flows and Malli schemas -> DOMAIN.md
 references() and rename() work in every language with a tree-sitter grammar: Python, JavaScript, TypeScript, Go, Rust, Java, Clojure and more.
 Call graphify.build() once before the first query, and again after edits that you make without rename(); it re-extracts only changed files.
-Name a node by id, label (`run-tests()`), bare name or Clojure `ns/name`. An ambiguous name raises an error that lists the candidate ids.
-Use the graph to find callers, dependents and paths across files; read the code itself before you edit it.
-To rename a symbol, use graphify.rename(), not hand edits: call it without apply, read its conflicts, diff and mentions, then call it with apply=True. It updates the graph.
+Name a node by id, label (`run-tests()`), bare name or qualified name (`ns/name`, `pkg.Name`, `Class.method`, `crate::mod::name`). An ambiguous name raises an error that lists each candidate id with its location.
+To find callers, uses or the impact of a change, use graphify.references() or graphify.affected(), not grep: they skip strings, comments and same-named symbols.
+To rename a symbol, use graphify.rename(), not hand edits: print the preview, check its conflicts, then call it with apply=True. It updates the graph.
+print(result) gives a short summary; read a field, such as `edits` or `diff`, only when you need its details.
 graphify.domain() reports calls to commands or queries that no service registers, call data that the :consumes schema rejects and broken Malli schemas. Read DOMAIN.md for the diagrams.
 Add a framework as a plugin file in <root>/.graphify/plugins/ or pass its path in `plugins`.
 Results are typed frozen objects."""
