@@ -20,7 +20,7 @@ uv run python bench/bench.py \
 ## What it measures
 
 - **Extraction**: the cold build, a rebuild without changes, and the recall and precision of definitions and var-to-var references (`calls` and `references` edges).
-- **Queries**: for 150 sampled vars that have callers, whether `explain("ns/name")` resolves, whether `explain()` and `affected(depth=1)` list every clj-kondo caller, and whether `shortest_path()` connects a caller to the var. It also times `search`, `hubs` and `query`.
+- **Queries**: for 150 sampled vars that have callers, whether `explain("ns/name")` resolves, whether `explain()` and `affected(depth=1)` list every clj-kondo caller, and whether `shortest_path()` connects a caller to the var. It also times `search` and `hubs`.
 - **Changes**: add a var that calls an existing var, rename a var in its file, and delete a file. After each incremental build, it checks that the graph and `affected()` show the change. Then it compares the incremental graph with a full build of the same tree.
 
 ## Results

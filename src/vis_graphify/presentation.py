@@ -15,8 +15,6 @@ from vis_graphify.tools import (
     ImpactResult,
     Node,
     PathResult,
-    PluginInfo,
-    QueryAnswer,
     ReferencesResult,
     RenameResult,
     SearchResult,
@@ -166,17 +164,17 @@ def references(result: ReferencesResult) -> vis.ActivityPresentation:
             "Find code references", "no references", (vis.ActivityText(f"No site names {result.node.label}."),)
         )
     more = ", truncated" if result.truncated else ""
-    rows = tuple((f"{ref.file}:{ref.line}:{ref.column}", ref.role, ref.text) for ref in result.references)
+    shown = result.references[:30]
+    rows = tuple((f"{ref.file}:{ref.line}:{ref.column}", ref.role, ref.text) for ref in shown)
+    content: tuple = (
+        vis.ActivityTable(columns=("Location", "Role", "Text"), rows=rows, paths=tuple(ref.file for ref in shown)),
+    )
+    if len(result.references) > len(shown):
+        content += (vis.ActivityText(f"… {len(result.references) - len(shown)} more in the result."),)
     return vis.ActivityPresentation(
         "Find code references",
         f"{_plural(result.total, 'reference')} in {_plural(len(result.files), 'file')}{more}",
-        (
-            vis.ActivityTable(
-                columns=("Location", "Role", "Text"),
-                rows=rows,
-                paths=tuple(ref.file for ref in result.references),
-            ),
-        ),
+        content,
     )
 
 
@@ -185,41 +183,23 @@ def rename(result: RenameResult) -> vis.ActivityPresentation:
     if result.conflicts:
         content = tuple(vis.ActivityText(conflict) for conflict in result.conflicts)
         return vis.ActivityPresentation(
-            "Rename Clojure var", f"{change}: not written, {_plural(len(result.conflicts), 'conflict')}", content
+            "Rename symbol", f"{change}: not written, {_plural(len(result.conflicts), 'conflict')}", content
         )
     state = "renamed" if result.applied else "preview"
-    content: tuple = (vis.ActivityDiff(_clip(result.diff, 20000), "diff"),) if result.diff else ()
+    content: tuple = (vis.ActivityDiff(_clip(result.diff, 8000), "diff"),) if result.diff else ()
     if result.mentions:
-        kept = "\n".join(result.mentions[:20]) + ("\n…" if len(result.mentions) > 20 else "")
+        kept = "\n".join(result.mentions[:10]) + ("\n…" if len(result.mentions) > 10 else "")
         content += (vis.ActivityText(f"Unchanged text that spells {result.old}:\n{kept}"),)
     return vis.ActivityPresentation(
-        "Rename Clojure var",
+        "Rename symbol",
         f"{change}: {state}, {_plural(len(result.edits), 'edit')} in {_plural(len(result.files), 'file')}",
         content,
     )
 
 
-def query(result: QueryAnswer) -> vis.ActivityPresentation:
-    lines = result.text.splitlines()
-    if not lines:
-        return vis.ActivityPresentation(
-            "Query code graph", "no answer", (vis.ActivityText("graphify found no matching nodes."),)
-        )
-    nodes = sum(1 for line in lines if line.startswith("NODE"))
-    edges = sum(1 for line in lines if line.startswith("EDGE"))
-    more = ", truncated" if "TRUNCATED" in result.text else ""
-    return vis.ActivityPresentation(
-        "Query code graph",
-        f"{_plural(nodes, 'node')}, {_plural(edges, 'edge')}{more}",
-        (vis.ActivityCode(_clip(result.text, 6000)),),
-    )
-
-
 def domain(result: DomainReport) -> vis.ActivityPresentation:
     if not result.plugins:
-        content = [
-            vis.ActivityText("No domain plugin applies. Name one in `plugins`, or list them with domain_plugins().")
-        ]
+        content = [vis.ActivityText("No domain plugin applies. Name one in `plugins`.")]
         content += [vis.ActivityCode(error) for error in result.plugin_errors]
         return vis.ActivityPresentation("Map domain flows", "no plugin applies", tuple(content))
     kinds = ", ".join(_plural(count, kind) for kind, count in result.counts.items())
@@ -242,21 +222,6 @@ def domain(result: DomainReport) -> vis.ActivityPresentation:
             ),
         ]
     return vis.ActivityPresentation("Map domain flows", summary, tuple(content))
-
-
-def domain_plugins(result: tuple[PluginInfo, ...]) -> vis.ActivityPresentation:
-    if not result:
-        return vis.ActivityPresentation(
-            "List domain plugins", "no plugins", (vis.ActivityText("graphify found no domain plugin."),)
-        )
-    failed = sum(1 for plugin in result if plugin.name == "<error>")
-    more = f", {_plural(failed, 'load error')}" if failed else ""
-    rows = tuple((plugin.name, _clip(plugin.description, 160), plugin.module) for plugin in result)
-    return vis.ActivityPresentation(
-        "List domain plugins",
-        f"{_plural(len(result) - failed, 'plugin')}{more}",
-        (vis.ActivityTable(("Plugin", "Description", "Module"), rows),),
-    )
 
 
 def _arguments(names: tuple[str, ...]) -> Callable[[tuple, dict], tuple]:

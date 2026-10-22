@@ -5,6 +5,7 @@ This module is plain Python. `extension.py` binds it to Vis.
 
 from __future__ import annotations
 
+import dataclasses
 import difflib
 import json
 import os
@@ -127,14 +128,6 @@ class ImpactResult:
 
 
 @dataclass(frozen=True)
-class QueryAnswer:
-    """graphify's own graph traversal for a natural-language question."""
-
-    question: Annotated[str, "The question."]
-    text: Annotated[str, "NODE and EDGE lines that graphify selected."]
-
-
-@dataclass(frozen=True)
 class DomainFinding:
     """One problem or note that a domain check reported."""
 
@@ -168,31 +161,24 @@ class DomainReport:
 
 
 @dataclass(frozen=True)
-class PluginInfo:
-    """One domain plugin that graphify can load."""
-
-    name: Annotated[str, "Plugin name; pass it in `plugins`."]
-    description: Annotated[str, "What the plugin reads, or the load error."]
-    module: Annotated[str, "Python module of the plugin; empty for a load error."]
-
-
-@dataclass(frozen=True)
 class Reference:
-    """One exact site of a Clojure var."""
+    """One exact site of a symbol."""
 
     file: Annotated[str, "Source file, relative to the project root."]
     line: Annotated[int, "1-based line."]
     column: Annotated[int, "1-based column of the name."]
-    role: Annotated[str, "use, definition, declaration, refer, implementation or comment."]
-    text: Annotated[str, "The name as written; a `:rename` alias differs from the var name."]
-    qualified: Annotated[bool, "True for `alias/name` or `ns/name`."]
+    role: Annotated[
+        str, "definition, use, member, import or export; Clojure adds refer, declaration and implementation."
+    ]
+    text: Annotated[str, "The name as written; an import alias differs from the symbol name."]
+    qualified: Annotated[bool, "True for a qualified site: `obj.name`, `mod::name` or `ns/name`."]
 
 
 @dataclass(frozen=True)
 class ReferencesResult:
-    """Every site that resolves to one Clojure var."""
+    """Every site that resolves to one symbol."""
 
-    node: Annotated[Node, "The var."]
+    node: Annotated[Node, "The symbol."]
     total: Annotated[int, "Count of all sites."]
     files: Annotated[tuple[str, ...], "Distinct files with a site."]
     references: Annotated[tuple[Reference, ...], "Sites in file and position order."]
@@ -214,41 +200,27 @@ class RenameEdit:
 class RenameResult:
     """A rename preview, or the rename that was written."""
 
-    node: Annotated[Node, "The var."]
-    old: Annotated[str, "Old var name."]
-    new: Annotated[str, "New var name."]
+    node: Annotated[Node, "The symbol."]
+    old: Annotated[str, "Old name."]
+    new: Annotated[str, "New name."]
     applied: Annotated[bool, "True when the files were written."]
     files: Annotated[tuple[str, ...], "Files that the rename changes."]
     edits: Annotated[tuple[RenameEdit, ...], "Every replacement."]
     conflicts: Annotated[tuple[str, ...], "Reasons that make the rename unsafe. With a conflict, nothing is written."]
     mentions: Annotated[
-        tuple[str, ...], "`file:line text` of strings, keywords and data that spell the old name and stay."
+        tuple[str, ...], "`file:line text` of strings, comments and other symbols that spell the old name and stay."
     ]
     diff: Annotated[str, "Unified diff of the change."]
-
-
-CLOJURE_SUFFIXES = (".clj", ".cljs", ".cljc", ".bb", ".edn")
-
-
-def _clojure_var(graph: g.Graph, node_id: str) -> tuple[str, str]:
-    """The namespace and name of a Clojure var node."""
-    raw = graph.nodes.get(node_id, {})
-    meta = raw.get("metadata") or {}
-    if meta.get("language") != "clojure" or meta.get("kind") != "var" or not meta.get("module") or not meta.get("name"):
-        label = raw.get("label", node_id)
-        raise ValueError(f"{label} is not a Clojure var. References and renames support Clojure vars only.")
-    return str(meta["module"]), str(meta["name"])
-
-
-def _clojure_files(graph: g.Graph, root: Path) -> list[Path]:
-    """The Clojure source files of the graph."""
-    files = {str(raw.get("source_file") or "") for raw in graph.nodes.values()}
-    return sorted(root / f for f in files if f.lower().endswith(CLOJURE_SUFFIXES))
 
 
 def _relative(root: Path, file: str) -> str:
     path = Path(file)
     return path.relative_to(root).as_posix() if path.is_relative_to(root) else file
+
+
+def _raw(graph: g.Graph) -> dict:
+    """The graph.json shape that `graphify.refactor` reads, from the cached graph."""
+    return {"nodes": list(graph.nodes.values()), "links": [dataclasses.asdict(link) for link in graph.links]}
 
 
 def _unified_diff(root: Path, contents: dict) -> str:
@@ -385,7 +357,17 @@ class GraphifyTools:
         Returns:
             BuildResult with the counts and the last lines of graphify output.
         """
-        path = self._root(root)
+        return self._update(self._root(root), force, cluster, timeout_s, plugins)
+
+    def _update(
+        self,
+        path: Path,
+        force: bool = False,
+        cluster: bool = True,
+        timeout_s: int = 1800,
+        plugins: list[str] | None = None,
+    ) -> BuildResult:
+        """Run `graphify update` on a resolved project root."""
         argv = graphify_command() + ["update", str(path)]
         if force:
             argv.append("--force")
@@ -522,58 +504,59 @@ class GraphifyTools:
         return ImpactResult(_node(graph, node_id), depth, files, impacts, len(rows) > limit)
 
     def references(self, node: str, root: str = ".", limit: int = 200) -> ReferencesResult:
-        """List every exact site of a Clojure var: uses, its definition and namespace refers.
+        """List every exact site of a symbol: its definition, uses, member calls and imports.
 
-        Resolution follows aliases, `:refer`, `:rename` and locals, so a parameter or
-        keyword with the same name never counts. Each site has its line and column.
+        Works for functions, methods, classes and Clojure vars in every language with a
+        tree-sitter grammar. Resolution follows imports, aliases, receiver types and
+        locals, so a parameter, a field or another symbol with the same name never counts.
         The files come from the graph; run graphify.build() after you add files.
 
         Args:
-            node: The var: id, label or `ns/name`.
+            node: The symbol: id, label or `ns/name`.
             root: Project directory, relative to the workspace root.
             limit: Maximum count of returned sites.
         """
-        from graphify import clojure_refactor
+        from graphify import refactor
 
         path = self._root(root)
         graph = g.load(path)
         node_id = g.resolve(graph, node)
-        ns, name = _clojure_var(graph, node_id)
-        sites = clojure_refactor.references(ns, name, _clojure_files(graph, path))
+        sites = refactor.references(_raw(graph), node_id, path)
         found = tuple(Reference(_relative(path, s.file), s.line, s.col, s.role, s.text, s.qualified) for s in sites)
         files = tuple(sorted({ref.file for ref in found}))
         return ReferencesResult(_node(graph, node_id), len(found), files, found[:limit], len(found) > limit)
 
     def rename(self, node: str, new_name: str, root: str = ".", apply: bool = False) -> RenameResult:
-        """Rename a Clojure var at every site that resolves to it, across files.
+        """Rename a symbol at every site that resolves to it, across files.
 
-        Without `apply`, nothing is written: read `conflicts`, `diff` and `mentions`,
-        then call again with `apply=True`. A conflict blocks the write: an invalid
-        name, a var that already has the new name, or a file where the new name
-        would bind to a local, another var or `clojure.core`. Strings, keywords and
-        quoted data stay; `mentions` lists them. Run graphify.build() after a rename.
+        Works for functions, methods, classes and Clojure vars in every language with a
+        tree-sitter grammar. Without `apply`, nothing is written: read `conflicts`, `diff`
+        and `mentions`, then call again with `apply=True`. A conflict blocks the write: an
+        invalid name, a file that already uses the new name, an override or trait method,
+        or a common method name on receivers of unknown type. Strings and comments stay;
+        `mentions` lists them. A written rename updates the graph.
 
         Args:
-            node: The var: id, label or `ns/name`.
-            new_name: The new name, without a namespace.
+            node: The symbol: id, label or `ns/name`.
+            new_name: The new name, without a namespace or class.
             root: Project directory, relative to the workspace root.
             apply: Write the files when the plan has no conflict.
         """
-        from graphify import clojure_refactor
+        from graphify import refactor
 
         path = self._root(root)
         graph = g.load(path)
         node_id = g.resolve(graph, node)
-        ns, name = _clojure_var(graph, node_id)
-        plan = clojure_refactor.plan_rename(ns, name, new_name, _clojure_files(graph, path))
-        contents = clojure_refactor.rewrite(plan) if plan.edits else {}
+        plan = refactor.plan_rename(_raw(graph), node_id, new_name, path)
+        contents = refactor.rewrite(plan) if plan.edits else {}
         applied = False
         if apply and not plan.conflicts:
-            clojure_refactor.apply_rename(plan)
+            refactor.apply_rename(plan)
             applied = True
+            self._update(path)
         return RenameResult(
             node=_node(graph, node_id),
-            old=name,
+            old=plan.old,
             new=new_name,
             applied=applied,
             files=tuple(_relative(path, f) for f in plan.files),
@@ -582,30 +565,6 @@ class GraphifyTools:
             mentions=tuple(f"{_relative(path, m.file)}:{m.line} {m.text}" for m in plan.mentions),
             diff=_unified_diff(path, contents),
         )
-
-    def query(self, question: str, root: str = ".", budget: int = 2000, timeout_s: int = 120) -> QueryAnswer:
-        """Ask graphify a natural-language question; it returns the relevant subgraph as text.
-
-        graphify selects start nodes by keyword and walks the graph breadth-first.
-        No LLM call is made.
-
-        Args:
-            question: The question, for example "how does the gateway start a session".
-            root: Project directory, relative to the workspace root.
-            budget: Approximate token cap of the answer.
-            timeout_s: Stop graphify after this many seconds.
-        """
-        path = self._root(root)
-        file = g.graph_path(path)
-        if not file.is_file():
-            raise g.GraphMissing(f"No graph at {file}. Build it first with graphify.build().")
-        argv = graphify_command() + ["query", question, "--budget", str(budget), "--graph", str(file)]
-        done = self._run(argv, cwd=str(path), env=_child_env(), capture_output=True, text=True, timeout=timeout_s)
-        if done.returncode != 0:
-            raise RuntimeError(
-                f"graphify query exited with status {done.returncode}.\n{_tail(done.stderr or done.stdout or '')}"
-            )
-        return QueryAnswer(question, (done.stdout or "").strip())
 
     def domain(
         self, root: str = ".", plugins: list[str] | None = None, limit: int = 200, timeout_s: int = 600
@@ -673,31 +632,4 @@ class GraphifyTools:
             findings=findings,
             plugin_errors=tuple(line[len(prefix) :] for line in stderr.splitlines() if line.startswith(prefix)),
             truncated=len(raw) > limit,
-        )
-
-    def domain_plugins(self, root: str = ".", timeout_s: int = 120) -> tuple[PluginInfo, ...]:
-        """List the domain plugins that graphify finds for a project.
-
-        graphify finds built-in plugins (`edd-core`), plugins that ship with this
-        extension, installed `graphify.domain_plugins` entry points, Python files
-        in `<root>/.graphify/plugins/` and specs in `GRAPHIFY_PLUGINS`.
-
-        Args:
-            root: Project directory, relative to the workspace root.
-            timeout_s: Stop graphify after this many seconds.
-        """
-        path = self._root(root)
-        argv = graphify_command() + ["domain", str(path), "--list-plugins", "--json"]
-        done = self._run(argv, cwd=str(path), env=_plugin_env(), capture_output=True, text=True, timeout=timeout_s)
-        try:
-            rows = json.loads(done.stdout or "")
-        except json.JSONDecodeError:
-            rows = None
-        if done.returncode != 0 or not isinstance(rows, list):
-            raise RuntimeError(
-                f"graphify domain exited with status {done.returncode}.\n{_tail(done.stderr or done.stdout or '')}"
-            )
-        return tuple(
-            PluginInfo(str(r.get("name") or ""), str(r.get("description") or ""), str(r.get("module") or ""))
-            for r in rows
         )

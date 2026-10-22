@@ -157,7 +157,6 @@ def test_project_and_bundled_plugins(tmp_path, monkeypatch):
     bundled.mkdir()
     (bundled / "batch.py").write_text(JOBS_PLUGIN.replace('name = "jobs"', 'name = "batch"'))
     monkeypatch.setattr(tools_module, "BUNDLED_PLUGINS", bundled)
-    assert "batch" in {p.name for p in tools.domain_plugins()}
     assert tools.domain(plugins=["batch"]).counts == {"job": 1}
 
 
@@ -239,3 +238,32 @@ def test_real_rename_conflict_writes_nothing(tmp_path):
     blocked = tools.rename("demo.db/connect", "run", apply=True)
     assert not blocked.applied and any("already uses `run`" in c for c in blocked.conflicts)
     assert (src / "core.clj").read_text() == before
+
+
+def test_real_rename_across_python_and_typescript(tmp_path):
+    files = {
+        "py/util.py": "def helper(x):\n    return x\n",
+        "py/main.py": "from util import helper\n\n\ndef run():\n    # helper is the identity\n    return helper(1)\n",
+        "web/util.ts": "export function formatName(n: string): string {\n  return n.trim();\n}\n",
+        "web/main.ts": "import { formatName } from './util';\n\nexport const a = formatName(' x ');\n",
+    }
+    for name, body in files.items():
+        (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / name).write_text(body, encoding="utf-8")
+    tools = GraphifyTools(workspace_root=lambda: str(tmp_path))
+    assert tools.build(cluster=False, timeout_s=600).ok
+    found = tools.references("helper()")
+    assert sorted((r.file, r.role) for r in found.references) == [
+        ("py/main.py", "import"),
+        ("py/main.py", "use"),
+        ("py/util.py", "definition"),
+    ]
+    preview = tools.rename("helper()", "assist")
+    assert not preview.applied and not preview.conflicts
+    assert preview.mentions == ("py/main.py:5 # helper is the identity",)
+    assert "+def assist(x):" in preview.diff
+    assert tools.rename("helper()", "assist", apply=True).applied
+    assert "return assist(1)" in (tmp_path / "py/main.py").read_text(encoding="utf-8")
+    done = tools.rename("formatName()", "displayName", apply=True)
+    assert done.applied and done.files == ("web/main.ts", "web/util.ts")
+    assert "import { displayName } from './util';" in (tmp_path / "web/main.ts").read_text(encoding="utf-8")

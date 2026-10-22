@@ -5,7 +5,6 @@ from pathlib import Path
 
 import pytest
 
-from vis_graphify import graph as g
 from vis_graphify.tools import BUNDLED_PLUGINS, GraphifyTools, graphify_command
 
 
@@ -85,26 +84,6 @@ def test_explain_limit_truncates(project):
     assert tools_for(project).explain("app.core/run", limit=1).truncated
 
 
-def test_query_passes_graph_and_budget(project):
-    runner = FakeRunner(stdout="NODE run()\nEDGE run() --calls--> query()\n")
-    answer = tools_for(project, runner).query("what does run call", budget=500)
-    argv, _ = runner.calls[0]
-    assert argv[-6:] == [
-        "query",
-        "what does run call",
-        "--budget",
-        "500",
-        "--graph",
-        str(project.resolve() / "graphify-out/graph.json"),
-    ]
-    assert answer.text.startswith("NODE")
-
-
-def test_query_without_graph_raises(tmp_path):
-    with pytest.raises(g.GraphMissing):
-        tools_for(tmp_path, FakeRunner()).query("x")
-
-
 def test_graphify_command_finds_an_interpreter():
     argv = graphify_command()
     assert Path(argv[0]).exists() or argv[0] == "graphify"
@@ -172,16 +151,6 @@ def test_domain_failure_and_timeout_raise(project):
 
     with pytest.raises(TimeoutError):
         tools_for(project, runner).domain(timeout_s=1)
-
-
-def test_domain_plugins_lists_rows(project):
-    rows = [{"name": "edd-core", "description": "edd", "module": "graphify.plugins.edd_core"}]
-    runner = FakeRunner(stdout=json.dumps(rows))
-    (plugin,) = tools_for(project, runner).domain_plugins()
-    assert runner.calls[0][0][-2:] == ["--list-plugins", "--json"]
-    assert (plugin.name, plugin.module) == ("edd-core", "graphify.plugins.edd_core")
-    with pytest.raises(RuntimeError):
-        tools_for(project, FakeRunner(1, "", "boom")).domain_plugins()
 
 
 def test_build_passes_plugins_to_graphify(project, monkeypatch):

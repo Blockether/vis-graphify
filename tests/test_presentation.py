@@ -13,8 +13,6 @@ from vis_graphify.tools import (
     GraphifyTools,
     ImpactResult,
     PathResult,
-    PluginInfo,
-    QueryAnswer,
     Reference,
     ReferencesResult,
     RenameEdit,
@@ -46,10 +44,6 @@ def test_success_states(tools, project):
     assert summary(presentation.affected(tools.affected("connect", depth=3))) == "3 dependents in 3 files"
     build = BuildResult(str(project), "g.json", True, 0, 6, 4, 1.5, "done")
     assert summary(presentation.build(build)) == "6 nodes, 4 edges in 1.5 s"
-    answer = QueryAnswer("q", "NODE a\nNODE b\nEDGE a --calls--> b")
-    assert summary(presentation.query(answer)) == "2 nodes, 1 edge"
-    cut = QueryAnswer("q", "[!] TRUNCATED: showing 1 of 9 nodes\nNODE a")
-    assert summary(presentation.query(cut)) == "1 node, 0 edges, truncated"
 
 
 def test_empty_states(tools, tmp_path_factory):
@@ -61,7 +55,6 @@ def test_empty_states(tools, tmp_path_factory):
     assert summary(presentation.explain(Explanation(lonely.node, (), (), False))) == "lonely(): 0 outgoing, 0 incoming"
     assert summary(presentation.shortest_path(PathResult(lonely.node, lonely.node, False, ()))) == "not connected"
     assert summary(presentation.affected(ImpactResult(lonely.node, 2, (), (), False))) == "no dependents"
-    assert summary(presentation.query(QueryAnswer("q", ""))) == "no answer"
 
 
 def test_renderer_failure_and_start_show_arguments():
@@ -97,9 +90,7 @@ def test_extension_registers_every_tool_with_an_activity(monkeypatch):
             "affected",
             "references",
             "rename",
-            "query",
             "domain",
-            "domain_plugins",
         ]
     )
     for name in public:
@@ -148,13 +139,6 @@ def test_domain_states():
     assert not [block for block in clean.content if isinstance(block, vis.ActivityTable)]
 
 
-def test_domain_plugins_states():
-    rows = (PluginInfo("edd-core", "edd", "m"), PluginInfo("<error>", "x.py: boom", ""))
-    assert summary(presentation.domain_plugins(rows)) == "1 plugin, 1 load error"
-    assert summary(presentation.domain_plugins(rows[:1])) == "1 plugin"
-    assert summary(presentation.domain_plugins(())) == "no plugins"
-
-
 def test_reference_and_rename_states(tools):
     node = tools.explain("connect").node
     ref = Reference("src/app/db.clj", 9, 7, "definition", "connect", False)
@@ -172,9 +156,9 @@ def test_reference_and_rename_states(tools):
     assert summary(presentation.rename(blocked)) == "connect → run: not written, 1 conflict"
 
 
-def test_rename_refuses_a_node_that_is_not_a_clojure_var(tools):
+def test_rename_refuses_a_node_without_name_sites(tools):
     # The fixture graph has no `name` metadata, like a graph from before v0.9.93-blockether.4.
-    with pytest.raises(ValueError, match="not a Clojure var"):
+    with pytest.raises(ValueError, match="grammar|not a code symbol"):
         tools.rename("connect", "open")
-    with pytest.raises(ValueError, match="not a Clojure var"):
+    with pytest.raises(ValueError, match="grammar|not a code symbol"):
         tools.references("app.core")

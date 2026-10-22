@@ -157,7 +157,6 @@ def queries(tools: t.GraphifyTools, root: Path, truth, samples: int, seed: int) 
         except (LookupError, ValueError):
             pass
     _, hubs_s = timed(tools.hubs, str(root), 20)
-    answer, query_s = timed(tools.query, "How are requests routed between components?", str(root))
     return {
         "sampled_vars": len(targets),
         "qualified_name_resolved": ratio(resolved, len(targets)),
@@ -166,8 +165,6 @@ def queries(tools: t.GraphifyTools, root: Path, truth, samples: int, seed: int) 
         "affected_depth1_caller_recall": ratio(affected_hits, explain_total),
         "shortest_path_found": ratio(path_found, resolved),
         "hubs_ms": round(hubs_s * 1000, 1),
-        "query_s": round(query_s, 2),
-        "query_answer_chars": len(answer.text),
         **{f"{k}_ms_p50": round(statistics.median(v) * 1000, 1) for k, v in lat.items() if v},
     }
 
