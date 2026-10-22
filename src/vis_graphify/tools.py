@@ -160,9 +160,11 @@ class Impact:
     node: Annotated[Node, "The dependent node."]
     distance: Annotated[int, "Steps from the changed node."]
     via: Annotated[str, "Relation through which it depends, such as `calls`."]
+    chain: Annotated[tuple[str, ...], "Labels of the nodes between it and the changed node, nearest to it first."] = ()
 
     def __str__(self) -> str:
-        return f"{self.distance}  {self.via:<10} {self.node}"
+        line = f"{self.distance}  {self.via:<10} {self.node}"
+        return f"{line}  via {' -> '.join(self.chain)}" if self.chain else line
 
 
 @dataclass(frozen=True)
@@ -177,7 +179,7 @@ class ImpactResult:
 
     def __str__(self) -> str:
         more = " (cut by `limit`)" if self.truncated else ""
-        header = f"{len(self.impacts)} dependents of {self.node.label} in {len(self.files)} files{more}. Distance, relation, node:"
+        header = f"{len(self.impacts)} dependents of {self.node.label} in {len(self.files)} files{more}. Distance, relation, node, then the nodes between:"
         return _listing(header, self.impacts, "impacts")
 
 
@@ -770,9 +772,20 @@ class GraphifyTools:
         graph = self._graph(self._root(root))
         node_id = g.resolve(graph, node)
         rows = g.affected(graph, node_id, max(1, depth) if depth else len(graph.nodes))
+        target = {other: link.target for other, _, link in rows}
         if within:
             rows = [row for row in rows if _within(_node(graph, row[0]).file, within)]
-        impacts = tuple(Impact(_node(graph, other), distance, link.relation) for other, distance, link in rows[:limit])
+
+        def chain(other: str) -> tuple[str, ...]:
+            labels, current = [], target[other]
+            while current != node_id and current in target and len(labels) < len(target):
+                labels.append(_node(graph, current).label)
+                current = target[current]
+            return tuple(labels)
+
+        impacts = tuple(
+            Impact(_node(graph, other), distance, link.relation, chain(other)) for other, distance, link in rows[:limit]
+        )
         files = tuple(sorted({impact.node.file for impact in impacts if impact.node.file}))
         reached = max((impact.distance for impact in impacts), default=0)
         return ImpactResult(_node(graph, node_id), depth or reached, files, impacts, len(rows) > limit)

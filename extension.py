@@ -7,7 +7,7 @@ import blockether.vis.extension as vis
 from vis_graphify import presentation
 from vis_graphify.tools import GraphifyTools, HubsResult, ImpactResult, ReferencesResult, SearchResult
 
-VERSION = "0.5.0"
+VERSION = "0.5.1"
 
 _Tag = Literal["observation", "mutation"]
 

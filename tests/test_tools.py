@@ -100,6 +100,8 @@ def test_search_explain_path_hubs_affected(project):
     impact = tools.affected("connect", depth=3)
     assert impact.files == ("src/app/core.clj", "src/app/db.clj", "src/app/web.clj")
     assert [i.distance for i in impact.impacts] == [1, 2, 3]
+    assert [i.chain for i in impact.impacts] == [(), ("query()",), ("run()", "query()")]
+    assert str(impact.impacts[2]).endswith("  via run() -> query()")
     assert tools.affected("connect").impacts == impact.impacts and tools.affected("connect").depth == 3
     assert tools.affected("connect", depth=1).files == ("src/app/db.clj",)
 
