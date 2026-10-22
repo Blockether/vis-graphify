@@ -291,115 +291,392 @@ def py_rename_method():
     )
 
 
-# Python: which handlers reach a function through calls, when modules reuse names.
+# Impact: which handlers reach a function through four layers of calls. Some repositories
+# import a decoy function with the same name from another module.
+
+REPO_FNS = ("rows", "count", "latest")
+SERVICE_FNS = ("fetch_one", "load_all", "save_one")
+SERVICES = ("orders", "users", "stock", "prices", "mail", "audit", "billing", "search")
 
 
-def py_impact():
-    rng = random.Random(7)
-    files = {
-        "app/__init__.py": "",
-        "app/repo/__init__.py": "",
-        "app/services/__init__.py": "",
-        "app/handlers/__init__.py": "",
-        "app/db.py": dedent("""
-            def execute(sql, params=()):
-                return [sql, params]
-
-
-            def execute_raw(sql):
-                return [sql]
-            """),
-    }
-    calls = {}
-    repo_names = ["rows", "count", "latest"]
-    repos = [f"r{i}" for i in range(8)]
-    for repo in repos:
-        body = ["from app import db", ""]
-        for name in repo_names:
-            target = rng.choice(["execute", "execute", "execute_raw"])
-            calls[f"app.repo.{repo}.{name}"] = [f"app.db.{target}"]
-            body += ["", f"def {name}(key):", f'    return db.{target}("{repo} {name}", )'.replace(", )", ")")]
-        files[f"app/repo/{repo}.py"] = "\n".join(body) + "\n"
-    service_names = ["fetch", "load", "save"]
-    services = ["orders", "users", "stock", "prices", "mail", "audit"]
-    for service in services:
-        picks = {name: rng.sample(repos, 2) for name in service_names}
-        imports = sorted({repo for pair in picks.values() for repo in pair})
-        body = [f"from app.repo import {repo}" for repo in imports] + [""]
-        for name in service_names:
-            first, second = picks[name]
-            a, b = rng.choice(repo_names), rng.choice(repo_names)
-            calls[f"app.services.{service}.{name}"] = [
-                f"app.repo.{first}.{a}",
-                f"app.repo.{second}.{b}",
-            ]
-            body += [
-                "",
-                f"def {name}(key):",
-                f"    first = {first}.{a}(key)",
-                f"    return first + {second}.{b}(key)",
-            ]
-        files[f"app/services/{service}.py"] = "\n".join(body) + "\n"
-    handlers = []
-    for h in range(10):
+def impact_model(seed: int, repos: int = 12, handlers: int = 20) -> dict:
+    """A random call graph: handlers -> services -> repositories -> db or legacy, with the answer."""
+    rng = random.Random(seed)
+    calls: dict[tuple, list[tuple]] = {}
+    repo_source = {}
+    for r in range(repos):
+        repo = f"r{r:02d}"
+        repo_source[repo] = "legacy" if r % 3 == 2 else "db"
+        for fn in REPO_FNS:
+            raw = rng.random() < 0.12
+            calls[("repo", repo, fn)] = [(repo_source[repo], "raw") if raw else ("db", "execute")]
+    for service in SERVICES:
+        for fn in SERVICE_FNS:
+            picks = rng.sample([f"r{r:02d}" for r in range(repos)], 2)
+            calls[("services", service, fn)] = [("repo", repo, rng.choice(REPO_FNS)) for repo in picks]
+    for h in range(handlers):
         module = f"h{h:02d}"
-        service = rng.choice(services)
-        other = rng.choice([s for s in services if s != service])
-        name_a, name_b = rng.choice(service_names), rng.choice(service_names)
-        alias = f"{other}_{name_b}"
-        lines = [
-            f"from app.services.{service} import {name_a}",
-            f"from app.services.{other} import {name_b} as {alias}",
-            "",
-            "",
-            "def _prepare(key):",
-            f"    return {alias}(key)",
-            "",
-            "",
-            f"def handle_{module}_get(key):",
-            f"    return {name_a}(key)",
-            "",
-            "",
-            f"def handle_{module}_post(key):",
-            "    return _prepare(key)",
-        ]
-        mod = f"app.handlers.{module}"
-        calls[f"{mod}._prepare"] = [f"app.services.{other}.{name_b}"]
-        calls[f"{mod}.handle_{module}_get"] = [f"app.services.{service}.{name_a}"]
-        calls[f"{mod}.handle_{module}_post"] = [f"{mod}._prepare"]
-        handlers += [f"{mod}.handle_{module}_get", f"{mod}.handle_{module}_post"]
-        files[f"app/handlers/{module}.py"] = "\n".join(lines) + "\n"
+        first, second = rng.sample(SERVICES, 2)
+        calls[("handlers", module, "get")] = [("services", first, rng.choice(SERVICE_FNS))]
+        calls[("handlers", module, "prepare")] = [("services", second, rng.choice(SERVICE_FNS))]
+        calls[("handlers", module, "post")] = [("handlers", module, "prepare")]
 
-    def reaches(fn, seen=()):
-        if fn == "app.db.execute_raw":
+    def reaches(key, seen=()):
+        if key == ("db", "raw"):
             return True
-        return any(reaches(c, seen + (fn,)) for c in calls.get(fn, []) if c not in seen)
+        return any(reaches(c, seen + (key,)) for c in calls.get(key, ()) if c not in seen)
 
-    answer = sorted(h.rsplit(".", 1)[1] for h in handlers if reaches(h))
-    assert 0 < len(answer) < len(handlers), answer
+    answer = sorted(
+        (m, fn) for (layer, m, fn) in calls if layer == "handlers" and fn != "prepare" and reaches((layer, m, fn))
+    )
+    assert 0 < len(answer) < 2 * handlers, answer
+    return {"calls": calls, "repo_source": repo_source, "repos": repos, "handlers": handlers, "answer": answer}
+
+
+def _handler_name(lang: str, module: str, fn: str) -> str:
+    if lang == "typescript":
+        return f"handle{module.capitalize()}{fn.capitalize()}"
+    return f"handle-{module}-{fn}" if lang == "clojure" else f"handle_{module}_{fn}"
+
+
+def _dash(name: str) -> str:
+    return name.replace("_", "-")
+
+
+def _camel(name: str) -> str:
+    head, *rest = name.split("_")
+    return head + "".join(part.capitalize() for part in rest)
+
+
+def render_impact(lang: str, model: dict) -> tuple[dict[str, str], list[str]]:
+    """Source files of an impact model in one language, and the handler names of the answer."""
+    calls, files = model["calls"], {}
+    repos = [f"r{r:02d}" for r in range(model["repos"])]
+    modules = [f"h{h:02d}" for h in range(model["handlers"])]
+    if lang == "python":
+        files["app/__init__.py"] = ""
+        for pkg in ("repo", "services", "handlers"):
+            files[f"app/{pkg}/__init__.py"] = ""
+        files["app/db.py"] = (
+            "def execute(sql, params=()):\n    return [sql, params]\n\n\ndef execute_raw(sql):\n    return [sql]\n"
+        )
+        files["app/legacy.py"] = (
+            '"""Old storage, kept for reports."""\n\n\ndef execute_raw(sql):\n    return ["legacy", sql]\n'
+        )
+        for repo in repos:
+            src = model["repo_source"][repo]
+            head = (
+                ["from app.db import execute, execute_raw"]
+                if src == "db"
+                else ["from app.db import execute", "from app.legacy import execute_raw"]
+            )
+            body = head + [""]
+            for fn in REPO_FNS:
+                target = "execute_raw" if calls[("repo", repo, fn)][0][1] == "raw" else "execute"
+                body += ["", f"def {fn}(key):", f'    return {target}("{repo} {fn} " + str(key))']
+            files[f"app/repo/{repo}.py"] = "\n".join(body) + "\n"
+        for service in SERVICES:
+            used = sorted({c[1] for fn in SERVICE_FNS for c in calls[("services", service, fn)]})
+            body = [f"from app.repo import {repo}" for repo in used] + [""]
+            for fn in SERVICE_FNS:
+                a, b = calls[("services", service, fn)]
+                body += ["", f"def {fn}(key):", f"    return {a[1]}.{a[2]}(key) + {b[1]}.{b[2]}(key)"]
+            files[f"app/services/{service}.py"] = "\n".join(body) + "\n"
+        for m in modules:
+            (g,) = calls[("handlers", m, "get")]
+            (p,) = calls[("handlers", m, "prepare")]
+            alias = f"{p[1]}_{p[2]}"
+            body = [
+                f"from app.services.{g[1]} import {g[2]}",
+                f"from app.services.{p[1]} import {p[2]} as {alias}",
+                "",
+                "",
+                "def _prepare(key):",
+                f"    return {alias}(key)",
+                "",
+                "",
+                f"def {_handler_name(lang, m, 'get')}(key):",
+                f"    return {g[2]}(key)",
+                "",
+                "",
+                f"def {_handler_name(lang, m, 'post')}(key):",
+                "    return _prepare(key)",
+            ]
+            files[f"app/handlers/{m}.py"] = "\n".join(body) + "\n"
+    elif lang == "typescript":
+        files["tsconfig.json"] = (
+            json.dumps(
+                {
+                    "compilerOptions": {"strict": True, "noEmit": True, "target": "es2020", "module": "commonjs"},
+                    "include": ["src"],
+                },
+                indent=2,
+            )
+            + "\n"
+        )
+        files["src/db.ts"] = (
+            "export function execute(sql: string): string[] {\n  return [sql];\n}\n\n"
+            'export function executeRaw(sql: string): string[] {\n  return ["raw", sql];\n}\n'
+        )
+        files["src/legacy.ts"] = (
+            '// Old storage, kept for reports.\nexport function executeRaw(sql: string): string[] {\n  return ["legacy", sql];\n}\n'
+        )
+        for repo in repos:
+            src = model["repo_source"][repo]
+            head = (
+                ['import { execute, executeRaw } from "../db";']
+                if src == "db"
+                else ['import { execute } from "../db";', 'import { executeRaw } from "../legacy";']
+            )
+            body = head + [""]
+            for fn in REPO_FNS:
+                target = "executeRaw" if calls[("repo", repo, fn)][0][1] == "raw" else "execute"
+                body += [
+                    f"export function {fn}(key: string): string[] {{",
+                    f'  return {target}("{repo} {fn} " + key);',
+                    "}",
+                    "",
+                ]
+            files[f"src/repo/{repo}.ts"] = "\n".join(body)
+        for service in SERVICES:
+            used = sorted({c[1] for fn in SERVICE_FNS for c in calls[("services", service, fn)]})
+            body = [f'import * as {repo} from "../repo/{repo}";' for repo in used] + [""]
+            for fn in SERVICE_FNS:
+                a, b = calls[("services", service, fn)]
+                body += [
+                    f"export function {_camel(fn)}(key: string): string[] {{",
+                    f"  return [...{a[1]}.{a[2]}(key), ...{b[1]}.{b[2]}(key)];",
+                    "}",
+                    "",
+                ]
+            files[f"src/services/{service}.ts"] = "\n".join(body)
+        for m in modules:
+            (g,) = calls[("handlers", m, "get")]
+            (p,) = calls[("handlers", m, "prepare")]
+            alias = f"{p[1]}{_camel(p[2]).capitalize()}"
+            imports = [
+                f'import {{ {_camel(g[2])} }} from "../services/{g[1]}";',
+                f'import {{ {_camel(p[2])} as {alias} }} from "../services/{p[1]}";',
+            ]
+            if g[1] == p[1] and g[2] == p[2]:
+                imports = [f'import {{ {_camel(g[2])}, {_camel(p[2])} as {alias} }} from "../services/{g[1]}";']
+            body = imports + [
+                "",
+                "function prepare(key: string): string[] {",
+                f"  return {alias}(key);",
+                "}",
+                "",
+                f"export function {_handler_name(lang, m, 'get')}(key: string): string[] {{",
+                f"  return {_camel(g[2])}(key);",
+                "}",
+                "",
+                f"export function {_handler_name(lang, m, 'post')}(key: string): string[] {{",
+                "  return prepare(key);",
+                "}",
+                "",
+            ]
+            files[f"src/handlers/{m}.ts"] = "\n".join(body)
+    elif lang == "clojure":
+        files["deps.edn"] = '{:paths ["src"]}\n'
+        files["src/shop/db.clj"] = "(ns shop.db)\n\n(defn execute [sql] [sql])\n\n(defn raw-query [sql] [:raw sql])\n"
+        files["src/shop/legacy.clj"] = (
+            '(ns shop.legacy\n  "Old storage, kept for reports.")\n\n(defn raw-query [sql] [:legacy sql])\n'
+        )
+        for repo in repos:
+            src = model["repo_source"][repo]
+            req = (
+                "[shop.db :refer [execute raw-query]]"
+                if src == "db"
+                else "[shop.db :refer [execute]]\n            [shop.legacy :refer [raw-query]]"
+            )
+            body = [f"(ns shop.repo.{repo}\n  (:require {req}))"]
+            for fn in REPO_FNS:
+                target = "raw-query" if calls[("repo", repo, fn)][0][1] == "raw" else "execute"
+                body += ["", f'(defn {fn} [k]\n  ({target} (str "{repo} {fn} " k)))']
+            files[f"src/shop/repo/{repo}.clj"] = "\n".join(body) + "\n"
+        for service in SERVICES:
+            used = sorted({c[1] for fn in SERVICE_FNS for c in calls[("services", service, fn)]})
+            req = "\n            ".join(f"[shop.repo.{repo} :as {repo}]" for repo in used)
+            body = [f"(ns shop.services.{service}\n  (:require {req}))"]
+            for fn in SERVICE_FNS:
+                a, b = calls[("services", service, fn)]
+                body += ["", f"(defn {_dash(fn)} [k]\n  (concat ({a[1]}/{a[2]} k) ({b[1]}/{b[2]} k)))"]
+            files[f"src/shop/services/{service}.clj"] = "\n".join(body) + "\n"
+        for m in modules:
+            (g,) = calls[("handlers", m, "get")]
+            (p,) = calls[("handlers", m, "prepare")]
+            if g[1] == p[1]:
+                req = f"[shop.services.{g[1]} :as {p[1]} :refer [{_dash(g[2])}]]"
+            else:
+                req = f"[shop.services.{g[1]} :refer [{_dash(g[2])}]]\n            [shop.services.{p[1]} :as {p[1]}]"
+            body = [
+                f"(ns shop.handlers.{m}\n  (:require {req}))",
+                "",
+                f"(defn- prepare [k]\n  ({p[1]}/{_dash(p[2])} k))",
+                "",
+                f"(defn {_handler_name(lang, m, 'get')} [k]\n  ({_dash(g[2])} k))",
+                "",
+                f"(defn {_handler_name(lang, m, 'post')} [k]\n  (prepare k))",
+            ]
+            files[f"src/shop/handlers/{m}.clj"] = "\n".join(body) + "\n"
+    return files, sorted(_handler_name(lang, m, fn) for m, fn in model["answer"])
+
+
+IMPACT = {
+    "python": ("py-impact", "`app.db.execute_raw`", "`app/handlers/`", "handle_h00_get", ["execute_raw", "execute"]),
+    "typescript": (
+        "ts-impact",
+        "`executeRaw` in `src/db.ts`",
+        "`src/handlers/`",
+        "handleH00Get",
+        ["executeRaw", "execute"],
+    ),
+    "clojure": (
+        "clj-impact",
+        "`shop.db/raw-query`",
+        "`src/shop/handlers/`",
+        "handle-h00-get",
+        ["raw-query", "execute"],
+    ),
+}
+
+
+def impact_task(lang: str) -> None:
+    name, target, folder, example, words = IMPACT[lang]
+    files, answer = render_impact(lang, impact_model(7))
+    decoy = {
+        "python": "`app.legacy.execute_raw`",
+        "typescript": "`executeRaw` in `src/legacy.ts`",
+        "clojure": "`shop.legacy/raw-query`",
+    }[lang]
     write_task(
-        "py-impact",
-        "python",
-        """
-        Find the handler functions in `app/handlers/` that can call `app.db.execute_raw`,
-        directly or through other functions. Write their names as a sorted JSON list of
-        strings to `impact.json` in the project root, for example `["handle_h00_get"]`. Do
-        not change the other files.
+        name,
+        lang,
+        f"""
+        Find the public handler functions in {folder} that can call {target},
+        directly or through other functions. {decoy} is a different function: calls of it do
+        not count. Write the handler names as a sorted JSON list of strings to `impact.json`
+        in the project root, for example `["{example}"]`. Do not change the other files.
         """,
         files,
-        {"want": {"impact.json": ["handle_"]}},
+        {"want": {"impact.json": [example[:6]]}},
         check='python3 "$VIS_HARBOR_TESTS/check.py"',
-        check_py=dedent(f"""
-            import json
-
-            assert json.load(open("impact.json")) == {answer!r}
-            print("ok")
-            """),
-        words=["execute_raw", "execute"],
+        check_py=f'import json\n\nassert json.load(open("impact.json")) == {answer!r}\nprint("ok")\n',
+        words=words,
     )
 
 
-# TypeScript: rename an exported function with an alias, a namespace import and a re-export.
+def py_impact():
+    impact_task("python")
+
+
+def ts_impact():
+    impact_task("typescript")
+
+
+def clj_impact():
+    impact_task("clojure")
+
+
+# Go: add a parameter to a function and update its calls; a function and a method with
+# the same name must stay.
+
+
+def go_add_param():
+    files = {
+        "go.mod": "module example.com/shop\n\ngo 1.21\n",
+        "pricing/pricing.go": dedent("""
+            package pricing
+
+            // Total adds the item prices.
+            func Total(items []int) int {
+            	sum := 0
+            	for _, item := range items {
+            		sum += item
+            	}
+            	return sum
+            }
+            """),
+        "audit/audit.go": dedent("""
+            package audit
+
+            // Total counts the audited items.
+            func Total(items []int) int {
+            	return len(items)
+            }
+            """),
+        "cart/cart.go": dedent("""
+            package cart
+
+            import "example.com/shop/pricing"
+
+            type Cart struct {
+            	Items []int
+            }
+
+            // Total is the price of the cart.
+            func (c *Cart) Total() int {
+            	return pricing.Total(c.Items)
+            }
+            """),
+    }
+    runs = []
+    calls = 0
+    for i in range(1, 13):
+        name = f"c{i:02d}"
+        kind = i % 4
+        if kind == 0:
+            imports, body = '"example.com/shop/pricing"', f"\treturn pricing.Total([]int{{{i}, 2}})"
+            calls += 1
+        elif kind == 1:
+            imports = 'p "example.com/shop/pricing"\n\t"example.com/shop/audit"'
+            body = f"\tn := audit.Total([]int{{{i}}})\n\treturn p.Total([]int{{{i}, n}}) + audit.Total(nil)"
+            calls += 1
+        elif kind == 2:
+            imports = '"example.com/shop/cart"\n\t"example.com/shop/pricing"'
+            body = f"\tc := cart.Cart{{Items: []int{{{i}}}}}\n\treturn c.Total() + pricing.Total(c.Items)"
+            calls += 1
+        else:
+            imports = '"example.com/shop/cart"\n\t"example.com/shop/audit"'
+            body = f"\tc := &cart.Cart{{Items: []int{{{i}, {i}}}}}\n\treturn c.Total() * audit.Total(c.Items)"
+        files[f"checkout/{name}.go"] = (
+            f"package checkout\n\nimport (\n\t{imports}\n)\n\nfunc Run{i:02d}() int {{\n{body}\n}}\n"
+        )
+        runs.append(f"Run{i:02d}")
+    lines = "\n".join(f"\ttotal += checkout.{run}()" for run in runs)
+    files["cmd/shop/main.go"] = (
+        f'package main\n\nimport (\n\t"fmt"\n\n\t"example.com/shop/checkout"\n)\n\nfunc main() {{\n\ttotal := 0\n{lines}\n\tfmt.Println("total", total)\n}}\n'
+    )
+    check_py = dedent(f"""
+        import pathlib
+        import re
+
+        calls = 0
+        for path in pathlib.Path(".").rglob("*.go"):
+            text = path.read_text()
+            calls += len(re.findall(r'\\b(?:pricing|p)\\.Total\\([^()]*(?:\\([^()]*\\)[^()]*)*, "EUR"\\)', text))
+            assert "audit.Total(" not in text or ', "EUR")' not in "".join(re.findall(r"audit\\.Total\\([^)]*\\)", text)), path
+        assert calls == {calls + 1}, calls
+        assert "func Total(items []int, currency string) int" in pathlib.Path("pricing/pricing.go").read_text()
+        assert "func Total(items []int) int" in pathlib.Path("audit/audit.go").read_text()
+        assert "func (c *Cart) Total() int" in pathlib.Path("cart/cart.go").read_text()
+        print("ok")
+        """)
+    write_task(
+        "go-add-param",
+        "go",
+        """
+        Add a second parameter `currency string` to the function `Total` in
+        `pricing/pricing.go`. Pass `"EUR"` as this argument at every call of it. `audit.Total`
+        and the method `Cart.Total` are different functions: keep them and their calls
+        unchanged.
+        """,
+        files,
+        {"want": {"pricing/pricing.go": ["currency string"]}},
+        check='go vet ./... && go run ./cmd/shop && python3 "$VIS_HARBOR_TESTS/check.py"',
+        check_py=check_py,
+        words=["Total", "currency"],
+    )
 
 
 def ts_rename_export():
@@ -913,7 +1190,17 @@ def clj_rename_var():
 
 def main():
     shutil.rmtree(TASKS, ignore_errors=True)
-    for make in (py_rename_method, py_impact, ts_rename_export, go_rename_type, rs_rename_fn, clj_rename_var):
+    for make in (
+        py_rename_method,
+        py_impact,
+        ts_impact,
+        clj_impact,
+        ts_rename_export,
+        go_rename_type,
+        go_add_param,
+        rs_rename_fn,
+        clj_rename_var,
+    ):
         make()
     print("\n".join(sorted(path.name for path in TASKS.iterdir())))
 
