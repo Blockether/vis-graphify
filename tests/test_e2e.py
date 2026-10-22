@@ -27,6 +27,8 @@ def test_real_clojure_graph(tmp_path):
     assert {e.node.label for e in run.outgoing if e.relation == "calls"} >= {"connect()", "query()"}
     impact = tools.affected("demo.db/connect")
     assert "src/demo/core.clj" in impact.files
+    assert tools.affected("demo.db/connect", within="src/demo/core.clj").files == ("src/demo/core.clj",)
+    assert tools.affected("demo.db/connect", within="lib/").impacts == ()
     assert tools.shortest_path("demo.core/run", "demo.db/query").found
 
 
@@ -267,3 +269,39 @@ def test_real_rename_across_python_and_typescript(tmp_path):
     done = tools.rename("formatName()", "displayName", apply=True)
     assert done.applied and done.files == ("web/main.ts", "web/util.ts")
     assert "import { displayName } from './util';" in (tmp_path / "web/main.ts").read_text(encoding="utf-8")
+
+
+def test_real_add_parameter_across_languages(tmp_path):
+    files = {
+        "py/util.py": "def helper(x):\n    return x\n",
+        "py/main.py": "from util import helper\n\n\ndef run():\n    return helper(1) + helper(2)\n",
+        "web/util.ts": "export function formatName(n: string): string {\n  return n.trim();\n}\n",
+        "web/main.ts": "import { formatName } from './util';\n\nexport const a = formatName(' x ');\n",
+        "src/demo/db.clj": "(ns demo.db)\n\n(defn connect [url] {:url url})\n",
+        "src/demo/core.clj": "(ns demo.core\n  (:require [demo.db :as db]))\n\n(defn run [u]\n  (db/connect u))\n",
+    }
+    for name, body in files.items():
+        (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / name).write_text(body, encoding="utf-8")
+    tools = GraphifyTools(workspace_root=lambda: str(tmp_path))
+    preview = tools.add_parameter("helper()", "scale=1", "scale=3")
+    assert not preview.applied and not preview.conflicts
+    assert "+    return helper(1, scale=3) + helper(2, scale=3)" in preview.diff
+    assert "helper(1)" in (tmp_path / "py/main.py").read_text(encoding="utf-8")  # a preview writes nothing
+    assert tools.add_parameter("helper()", "scale=1", "scale=3", apply=True).applied
+    assert "def helper(x, scale=1):" in (tmp_path / "py/util.py").read_text(encoding="utf-8")
+    done = tools.add_parameter("formatName()", "upper: boolean", "true", apply=True)
+    assert done.applied and done.files == ("web/main.ts", "web/util.ts")
+    assert "formatName(' x ', true)" in (tmp_path / "web/main.ts").read_text(encoding="utf-8")
+    assert tools.add_parameter("demo.db/connect", "opts", "{}", apply=True).applied
+    assert "(defn connect [url opts]" in (tmp_path / "src/demo/db.clj").read_text(encoding="utf-8")
+    assert "(db/connect u {})" in (tmp_path / "src/demo/core.clj").read_text(encoding="utf-8")
+
+
+def test_real_add_parameter_conflict_writes_nothing(tmp_path):
+    (tmp_path / "jobs.py").write_text("def job(a, b=1):\n    return a\n\n\nhandlers = [job]\n")
+    tools = GraphifyTools(workspace_root=lambda: str(tmp_path))
+    blocked = tools.add_parameter("job()", "c", "0", apply=True)
+    assert not blocked.applied and len(blocked.conflicts) == 2
+    assert "Nothing was written" in str(blocked)
+    assert (tmp_path / "jobs.py").read_text().startswith("def job(a, b=1):")

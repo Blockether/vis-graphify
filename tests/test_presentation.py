@@ -1,3 +1,4 @@
+import dataclasses
 import importlib.util
 from pathlib import Path
 
@@ -7,10 +8,12 @@ import pytest
 from vis_graphify import presentation
 from vis_graphify.tools import (
     BuildResult,
+    CallEdit,
     DomainFinding,
     DomainReport,
     Explanation,
     GraphifyTools,
+    HubsResult,
     ImpactResult,
     PathResult,
     Reference,
@@ -18,6 +21,7 @@ from vis_graphify.tools import (
     RenameEdit,
     RenameResult,
     SearchResult,
+    SignatureResult,
 )
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -50,7 +54,7 @@ def test_empty_states(tools, tmp_path_factory):
     empty = GraphifyTools(workspace_root=lambda: str(tmp_path_factory.mktemp("empty")))
     assert summary(presentation.status(empty.status())) == "no graph yet"
     assert summary(presentation.search(SearchResult("zzz", 0, ()))) == "no matches"
-    assert summary(presentation.hubs(())) == "no edges"
+    assert summary(presentation.hubs(HubsResult(()))) == "no edges"
     lonely = tools.explain("lonely")
     assert summary(presentation.explain(Explanation(lonely.node, (), (), False))) == "lonely(): 0 outgoing, 0 incoming"
     assert summary(presentation.shortest_path(PathResult(lonely.node, lonely.node, False, ()))) == "not connected"
@@ -90,6 +94,7 @@ def test_extension_registers_every_tool_with_an_activity(monkeypatch):
             "affected",
             "references",
             "rename",
+            "add_parameter",
             "domain",
         ]
     )
@@ -162,3 +167,14 @@ def test_rename_refuses_a_node_without_name_sites(tools):
         tools.rename("connect", "open")
     with pytest.raises(ValueError, match="grammar|not a code symbol"):
         tools.references("app.core")
+
+
+def test_add_parameter_states(tools):
+    node = tools.explain("connect").node
+    edit = CallEdit("src/app/db.clj", 9, "call", " opts")
+    preview = SignatureResult(node, "opts", "{}", False, ("src/app/db.clj",), (edit,), (), "-a\n+b\n")
+    assert summary(presentation.add_parameter(preview)) == "connect() + opts: preview, 1 call in 1 file"
+    done = dataclasses.replace(preview, applied=True)
+    assert summary(presentation.add_parameter(done)) == "connect() + opts: written, 1 call in 1 file"
+    blocked = SignatureResult(node, "opts", "{}", False, (), (), ("x: used as a value.",), "")
+    assert summary(presentation.add_parameter(blocked)) == "connect() + opts: not written, 1 conflict"

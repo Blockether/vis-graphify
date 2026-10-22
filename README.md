@@ -12,6 +12,8 @@ namespaces, vars, `:require` aliases, cross-file calls, protocols, records and C
 - You want to rename a function, method, class or Clojure var everywhere without touching locals,
   fields, strings or other symbols with the same name: use `graphify.rename`. See
   [Rename a symbol](#rename-a-symbol).
+- You want to add a parameter to a function and pass a value at every call: use
+  `graphify.add_parameter`. See [Add a parameter](#add-a-parameter).
 - You want to see how two parts of the code connect: use `graphify.shortest_path`.
 - You join an unknown codebase and want its central code first: use `graphify.hubs`.
 - You want to see how commands, queries and events flow between your services, or find calls to
@@ -34,15 +36,16 @@ The agent uses these tools in its Python sandbox:
 
 | Call | Result |
 |---|---|
-| `graphify.build(root=".")` | Creates or updates `<root>/graphify-out/graph.json`. Later builds re-extract only changed files. |
+| `graphify.build(root=".")` | Creates or updates `<root>/graphify-out/graph.json`. Other calls do this for you when the graph is missing or a source file changed. |
 | `graphify.status(root=".")` | Node, edge and file counts, and the build time. |
 | `graphify.search("gateway.*client")` | Nodes whose label, id or file matches the regex. |
 | `graphify.explain("my.ns/run")` | The node, what it calls and what calls or contains it. |
 | `graphify.shortest_path("a", "b")` | The shortest chain of edges between two nodes. |
 | `graphify.hubs(limit=20)` | The most called nodes. |
-| `graphify.affected("my.ns/run", depth=2)` | Callers, importers and users, with their files. |
+| `graphify.affected("my.ns/run", within="src/api/")` | Every caller, importer and user, across all steps, with distance and file. `within` keeps only one folder or glob. `depth=2` stops after two steps. |
 | `graphify.references("my.ns/run")` | Every exact site of a symbol: file, line, column and role. |
-| `graphify.rename("my.ns/run", "start")` | A rename preview with a diff and conflicts. `apply=True` writes the files and updates the graph. |
+| `graphify.rename("my.ns/run", "start", apply=True)` | Renames the symbol everywhere and updates the graph. Without `apply`, it only returns the diff. |
+| `graphify.add_parameter("Total", "currency string", '"EUR"', apply=True)` | Adds a last parameter to the definition and the argument to every call. Without `apply`, it only returns the diff. |
 | `graphify.domain(root=".")` | The domain model: services, commands, queries, events, links, schemas and findings. Writes `DOMAIN.md`. |
 
 You can name a node by its id, its label (`run()`), its bare name (`run`) or a qualified name
@@ -50,12 +53,14 @@ You can name a node by its id, its label (`run()`), its bare name (`run`) or a q
 (`src/util.rs::checksum`). If a name matches more than one
 node, the error lists each candidate id with its file and line.
 
-`graphify.build()` writes `graphify-out/.gitignore`, so git and `grep` skip the graph files.
+`print(result)` shows a short summary with `file:line` locations. Read a field, such as `diff`, for the details.
+The graph build writes `graphify-out/.gitignore`, so git and `grep` skip the graph files.
 
 ## Rename a symbol
 
-Ask in chat, for example "rename `parse_config` to `load_config`". The agent first calls
-`graphify.rename("parse_config()", "load_config")`. This call writes nothing. It returns:
+Ask in chat, for example "rename `parse_config` to `load_config`". The agent calls
+`graphify.rename("parse_config()", "load_config", apply=True)`. When the rename has a conflict,
+the call writes nothing. The result has these fields:
 
 - `diff`: the change in each file;
 - `conflicts`: why the rename is unsafe, if it is. Examples are a file that already uses the new
@@ -64,8 +69,7 @@ Ask in chat, for example "rename `parse_config` to `load_config`". The agent fir
 - `mentions`: other code symbols that spell the old name. They stay unchanged; check them.
 - `text_mentions`: the count of strings, comments and keywords that spell the old name. They stay unchanged.
 
-When the preview has no conflict, `graphify.rename("parse_config()", "load_config", apply=True)`
-writes the files and updates the graph. A file that changed after the preview stops the write.
+Without `apply=True`, the call is a preview and writes nothing. A file that changed after the plan stops the write.
 
 The rename works in every language with a tree-sitter grammar in graphify: Python, JavaScript,
 TypeScript, Go, Rust, Java, C#, Kotlin, Ruby, PHP, Clojure and more. It follows imports, aliases,
@@ -73,6 +77,22 @@ re-exports and declared receiver types, and it skips parameters, locals and fiel
 For Clojure, it follows `:as`, `:refer`, `:refer :all` and `:rename`, and changes `declare`,
 `defmethod`, protocol implementations, `#'var`, `resolve`, syntax-quote and `->Rec` factories.
 `graphify.references()` lists the same sites without a change.
+
+## Add a parameter
+
+Ask in chat, for example "add a `currency string` parameter to `pricing.Total` and pass `"EUR"`".
+The agent calls `graphify.add_parameter("pricing/pricing.go::Total", "currency string", '"EUR"', apply=True)`.
+The call finds the calls with the same exact resolution as `graphify.references()`. A method or a
+function in another package with the same name stays unchanged.
+
+- Write the parameter as the language writes it: `currency string` (Go), `currency: str` (Python),
+  `currency: string` (TypeScript) or `currency` (Clojure).
+- The parameter goes last in the definition, and the argument goes last in each call.
+- A multi-line call with a trailing comma gets the argument on its own line.
+
+The call writes nothing when a site blocks the change. Examples are a function that is passed as a
+value, not called, or a Python list that ends with `*args`, `**kwargs` or a default. In Python, pass
+`name=value` after a default. Then change the blocked sites by hand.
 
 ## Domain flows
 

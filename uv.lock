@@ -744,8 +744,8 @@ wheels = [
 
 [[package]]
 name = "graphifyy"
-version = "0.9.93+blockether.7"
-source = { git = "https://github.com/Blockether/graphify?rev=v0.9.93-blockether.7#f6f4311ba3b272e05dd9abe5a89d3069476f0d3a" }
+version = "0.9.93+blockether.8"
+source = { git = "https://github.com/Blockether/graphify?rev=v0.9.93-blockether.8#339c3191bb22f7c13f33fbb577f5bebdc8d00975" }
 dependencies = [
     { name = "networkx" },
     { name = "numpy" },
@@ -3161,7 +3161,7 @@ wheels = [
 
 [[package]]
 name = "vis-graphify"
-version = "0.3.3"
+version = "0.4.0"
 source = { virtual = "." }
 dependencies = [
     { name = "graphifyy" },
@@ -3171,7 +3171,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "graphifyy", git = "https://github.com/Blockether/graphify?rev=v0.9.93-blockether.7" },
+    { name = "graphifyy", git = "https://github.com/Blockether/graphify?rev=v0.9.93-blockether.8" },
     { name = "graspologic-native", specifier = ">=1.3.1,<2" },
     { name = "vis-agent", specifier = ">=0.2.45" },
 ]

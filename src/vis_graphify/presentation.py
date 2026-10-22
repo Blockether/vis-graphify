@@ -11,13 +11,14 @@ from vis_graphify.tools import (
     DomainReport,
     Explanation,
     GraphStatus,
-    Hub,
+    HubsResult,
     ImpactResult,
     Node,
     PathResult,
     ReferencesResult,
     RenameResult,
     SearchResult,
+    SignatureResult,
 )
 
 
@@ -123,16 +124,17 @@ def shortest_path(result: PathResult) -> vis.ActivityPresentation:
     )
 
 
-def hubs(result: tuple[Hub, ...]) -> vis.ActivityPresentation:
-    if not result:
+def hubs(result: HubsResult) -> vis.ActivityPresentation:
+    rows = result.hubs
+    if not rows:
         return vis.ActivityPresentation(
             "List code hubs", "no edges", (vis.ActivityText("The graph has no matching edges."),)
         )
-    nodes = tuple(hub.node for hub in result)
+    nodes = tuple(hub.node for hub in rows)
     return vis.ActivityPresentation(
         "List code hubs",
-        f"top {len(result)}, led by {result[0].node.label}",
-        (_node_table(nodes, ("Degree",), lambda i: (str(result[i].degree),)),),
+        f"top {len(rows)}, led by {rows[0].node.label}",
+        (_node_table(nodes, ("Degree",), lambda i: (str(rows[i].degree),)),),
     )
 
 
@@ -191,6 +193,23 @@ def rename(result: RenameResult) -> vis.ActivityPresentation:
     return vis.ActivityPresentation(
         "Rename symbol",
         f"{change}: {state}, {_plural(len(result.edits), 'edit')} in {_plural(len(result.files), 'file')}",
+        content,
+    )
+
+
+def add_parameter(result: SignatureResult) -> vis.ActivityPresentation:
+    change = f"{result.node.label} + {result.parameter}"
+    if result.conflicts:
+        content = tuple(vis.ActivityText(conflict) for conflict in result.conflicts)
+        return vis.ActivityPresentation(
+            "Add parameter", f"{change}: not written, {_plural(len(result.conflicts), 'conflict')}", content
+        )
+    state = "written" if result.applied else "preview"
+    calls = sum(1 for edit in result.edits if edit.kind == "call")
+    content: tuple = (vis.ActivityDiff(_clip(result.diff, 8000), "diff"),) if result.diff else ()
+    return vis.ActivityPresentation(
+        "Add parameter",
+        f"{change}: {state}, {_plural(calls, 'call')} in {_plural(len(result.files), 'file')}",
         content,
     )
 

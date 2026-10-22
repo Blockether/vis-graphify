@@ -74,6 +74,25 @@ def graph_path(root: str | Path) -> Path:
     return Path(root) / GRAPH_DIR / GRAPH_FILE
 
 
+def stale(graph: Graph, root: str | Path) -> bool:
+    """Whether a source file of the graph, or a folder that holds one, changed after the build.
+
+    A new or deleted file changes its folder, so it counts too. A path that does not
+    exist is skipped.
+    """
+    built = graph.path.stat().st_mtime_ns
+    root = Path(root)
+    files = {str(node.get("source_file")) for node in graph.nodes.values() if node.get("source_file")}
+    places = {root / file for file in files} | {(root / file).parent for file in files}
+    for place in places:
+        try:
+            if place.stat().st_mtime_ns > built:
+                return True
+        except FileNotFoundError:
+            continue
+    return False
+
+
 def parse(path: Path, data: dict) -> Graph:
     """Index the decoded content of a graph.json."""
     nodes = {node["id"]: node for node in data.get("nodes", ()) if "id" in node}
@@ -105,7 +124,7 @@ def load(root: str | Path) -> Graph:
     try:
         stat = path.stat()
     except FileNotFoundError:
-        raise GraphMissing(f"No graph at {path}. Build it first with graphify.build().") from None
+        raise GraphMissing(f"No graph at {path}. Run graphify.build() first.") from None
     stamp = (stat.st_mtime_ns, stat.st_size)
     cached = _CACHE.get(path)
     if cached and cached[0] == stamp:

@@ -93,10 +93,37 @@ def test_search_explain_path_hubs_affected(project):
     assert {e.relation for e in explained.incoming} == {"contains", "calls"}
     path = tools.shortest_path("app.web/run", "connect")
     assert path.found and [s.node.label for s in path.steps] == ["run()", "query()", "connect()"]
-    assert tools.hubs(limit=1)[0].node.id == "src_app_core_run"
+    assert tools.hubs(limit=1).hubs[0].node.id == "src_app_core_run"
     impact = tools.affected("connect", depth=3)
     assert impact.files == ("src/app/core.clj", "src/app/db.clj", "src/app/web.clj")
     assert [i.distance for i in impact.impacts] == [1, 2, 3]
+    assert tools.affected("connect").impacts == impact.impacts and tools.affected("connect").depth == 3
+    assert tools.affected("connect", depth=1).files == ("src/app/db.clj",)
+
+
+def test_result_text_is_one_line_per_row(project):
+    tools = tools_for(project)
+    assert str(tools.search("db")).splitlines()[0] == "2 of 2 nodes match 'db':"
+    assert str(tools.affected("connect")).splitlines()[1].startswith("  1  calls      query()  src/app/db.clj:")
+    assert str(tools.shortest_path("app.web/run", "connect")).endswith("-> connect()")
+    assert str(tools.hubs(limit=1)).splitlines()[1].endswith("[src_app_core_run]")
+    explained = str(tools.explain("app.core/run")).splitlines()
+    assert explained[1] == "Uses:" and "Used by:" in explained
+
+
+def test_queries_build_a_missing_graph_and_update_a_stale_one(project):
+    runner = FakeRunner()
+    tools = tools_for(project, runner)
+    graph = project / "graphify-out" / "graph.json"
+    source = project / "src" / "app" / "db.clj"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_text("(ns app.db)\n")
+    os.utime(graph, ns=(source.stat().st_mtime_ns + 10**9,) * 2)
+    tools.search("db")
+    assert runner.calls == []
+    os.utime(source, ns=(graph.stat().st_mtime_ns + 10**9,) * 2)
+    tools.search("db")
+    assert runner.calls[-1][0][-2] == "update"
 
 
 def test_explain_limit_truncates(project):

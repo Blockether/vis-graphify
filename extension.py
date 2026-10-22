@@ -5,9 +5,9 @@ from typing import Literal
 import blockether.vis.extension as vis
 
 from vis_graphify import presentation
-from vis_graphify.tools import GraphifyTools, ImpactResult, ReferencesResult, SearchResult
+from vis_graphify.tools import GraphifyTools, HubsResult, ImpactResult, ReferencesResult, SearchResult
 
-VERSION = "0.3.3"
+VERSION = "0.4.0"
 
 _Tag = Literal["observation", "mutation"]
 
@@ -15,6 +15,7 @@ _Tag = Literal["observation", "mutation"]
 vis.sequence(field="nodes")(SearchResult)
 vis.sequence(field="references")(ReferencesResult)
 vis.sequence(field="impacts")(ImpactResult)
+vis.sequence(field="hubs")(HubsResult)
 
 
 def _bind(name, label, build, arguments=(), *, tag: _Tag = "observation", show_start=False):
@@ -46,28 +47,31 @@ _bind("search", "Search code graph", presentation.search, ("pattern", "root"))
 _bind("explain", "Explain code node", presentation.explain, ("node", "root"))
 _bind("shortest_path", "Find code path", presentation.shortest_path, ("source", "target", "root"))
 _bind("hubs", "List code hubs", presentation.hubs, ("root", "limit", "relation"))
-_bind("affected", "Find affected code", presentation.affected, ("node", "root", "depth"))
+_bind("affected", "Find affected code", presentation.affected, ("node", "root", "depth", "within"))
 _bind("references", "Find code references", presentation.references, ("node", "root"))
 _bind("rename", "Rename symbol", presentation.rename, ("node", "new_name", "root", "apply"), tag="mutation")
+_bind(
+    "add_parameter",
+    "Add parameter",
+    presentation.add_parameter,
+    ("node", "parameter", "argument", "root", "apply"),
+    tag="mutation",
+)
 _bind("domain", "Map domain flows", presentation.domain, ("root", "plugins"), tag="mutation", show_start=True)
 
-PROMPT = """graphify surface active: a code knowledge graph (tree-sitter AST, no LLM) of the workspace.
-  graphify.build(root=".")                    create or update <root>/graphify-out/graph.json
-  graphify.status(root=".")                   size and age of the graph
-  graphify.search(pattern) · graphify.explain(node) · graphify.hubs()
-  graphify.shortest_path(source, target) · graphify.affected(node, depth=2)
-  graphify.references(node)                   every exact site of a symbol, with line, column and role
-  graphify.rename(node, new_name, apply=False) rename a function, method, class or var everywhere; a preview until apply=True
-  graphify.domain(root=".", plugins=None)     commands, queries, events, flows and Malli schemas -> DOMAIN.md
-references() and rename() work in every language with a tree-sitter grammar: Python, JavaScript, TypeScript, Go, Rust, Java, Clojure and more.
-Call graphify.build() once before the first query, and again after edits that you make without rename(); it re-extracts only changed files.
-Name a node by id, label (`run-tests()`), bare name or qualified name (`ns/name`, `pkg.Name`, `Class.method`, `crate::mod::name`) or file and name (`src/util.rs::checksum`). An ambiguous name raises an error that lists each candidate id with its location.
-To find callers, uses or the impact of a change, use graphify.references() or graphify.affected(), not grep: they skip strings, comments and same-named symbols.
-To rename a symbol, use graphify.rename(), not hand edits: print the preview, check its conflicts, then call it with apply=True. It updates the graph.
-print(result) gives a short summary; read a field, such as `edits` or `diff`, only when you need its details.
-graphify.domain() reports calls to commands or queries that no service registers, call data that the :consumes schema rejects and broken Malli schemas. Read DOMAIN.md for the diagrams.
-Add a framework as a plugin file in <root>/.graphify/plugins/ or pass its path in `plugins`.
-Results are typed frozen objects."""
+PROMPT = """graphify surface active: a code graph of the workspace (tree-sitter AST, no LLM) for Python, JavaScript, TypeScript, Go, Rust, Java, Clojure and other languages.
+Each query builds the graph when it is missing and updates it after file changes.
+Pick the call for the question; each answers in one call:
+  graphify.affected(node, within="src/api/") what a change can break: every caller, importer and user, across all steps; `within` keeps one folder
+  graphify.references(node)                   every exact site of a symbol: definition, calls, imports, with file:line:column
+  graphify.rename(node, new_name, apply=True) rename a function, method, class or var everywhere; writes nothing on a conflict
+  graphify.add_parameter(node, "currency string", '"EUR"', apply=True)  add a last parameter and pass the argument at every call
+  graphify.explain(node) · graphify.shortest_path(source, target) · graphify.search(pattern) · graphify.hubs()
+  graphify.domain()                           edd-core commands, queries, events and Malli schemas -> DOMAIN.md
+These calls skip strings, comments and other symbols with the same name. Use them, not grep or reading every file.
+Name a node by id, label, bare name, qualified name (`ns/name`, `pkg.Name`, `Class.method`, `crate::mod::name`) or `file::name`. An ambiguous name raises an error that lists each candidate with its location.
+print(result) gives a short summary with file:line locations; read a field only for more detail.
+Results are typed frozen objects; search, references, affected and hubs results iterate."""
 
 vis.register_extension(
     vis.Extension(

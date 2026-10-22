@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import dataclasses
 import difflib
+import fnmatch
 import json
 import os
 import shutil
@@ -31,6 +32,10 @@ class Node:
     kind: Annotated[str, "Language kind, such as `namespace` or `var`, or the file type."]
     community: Annotated[int | None, "Cluster number, if the graph was clustered."]
 
+    def __str__(self) -> str:
+        where = f"{self.file}:{self.line}" if self.line else self.file
+        return f"{self.label}  {where}  [{self.id}]" if where else f"{self.label}  [{self.id}]"
+
 
 @dataclass(frozen=True)
 class Edge:
@@ -40,6 +45,9 @@ class Edge:
     node: Annotated[Node, "The node at the other end."]
     confidence: Annotated[str, "EXTRACTED for parsed facts, INFERRED for guesses."]
     at: Annotated[str, "Where the edge occurs, as `file:Lline`."]
+
+    def __str__(self) -> str:
+        return f"{self.relation} {self.node}"
 
 
 @dataclass(frozen=True)
@@ -69,6 +77,11 @@ class GraphStatus:
     relations: Annotated[dict[str, int], "Edge count for each relation."]
     built_at: Annotated[str, "Modification time of graph.json, ISO 8601, or empty."]
 
+    def __str__(self) -> str:
+        if not self.exists:
+            return "No graph yet. Any graphify query builds it."
+        return f"Graph: {self.nodes} nodes, {self.edges} edges, {self.files} files, built {self.built_at}."
+
 
 @dataclass(frozen=True)
 class SearchResult:
@@ -77,6 +90,9 @@ class SearchResult:
     pattern: Annotated[str, "The case-insensitive regex."]
     total: Annotated[int, "Count of all matches."]
     nodes: Annotated[tuple[Node, ...], "The best matches, labels first, then by degree."]
+
+    def __str__(self) -> str:
+        return _listing(f"{len(self.nodes)} of {self.total} nodes match {self.pattern!r}:", self.nodes, "nodes")
 
 
 @dataclass(frozen=True)
@@ -88,6 +104,15 @@ class Explanation:
     incoming: Annotated[tuple[Edge, ...], "Edges to the node: callers, importers, its container."]
     truncated: Annotated[bool, "True when `limit` cut either list."]
 
+    def __str__(self) -> str:
+        return "\n".join(
+            [
+                str(self.node),
+                _listing("Uses:", self.outgoing, "outgoing"),
+                _listing("Used by:", self.incoming, "incoming"),
+            ]
+        )
+
 
 @dataclass(frozen=True)
 class PathResult:
@@ -98,6 +123,12 @@ class PathResult:
     found: Annotated[bool, "False when the nodes are not connected."]
     steps: Annotated[tuple[Edge, ...], "Each hop: the relation and the node it reaches."]
 
+    def __str__(self) -> str:
+        if not self.found:
+            return f"No path from {self.source.label} to {self.target.label}."
+        hops = " ".join(f"-{step.relation}-> {step.node.label}" for step in self.steps)
+        return f"{self.source.label} {hops}"
+
 
 @dataclass(frozen=True)
 class Hub:
@@ -105,6 +136,19 @@ class Hub:
 
     node: Annotated[Node, "The node."]
     degree: Annotated[int, "Count of counted edges."]
+
+    def __str__(self) -> str:
+        return f"{self.degree:>4}  {self.node}"
+
+
+@dataclass(frozen=True)
+class HubsResult:
+    """The most connected nodes."""
+
+    hubs: Annotated[tuple[Hub, ...], "Nodes with their degree, highest first."]
+
+    def __str__(self) -> str:
+        return _listing("Degree, node:", self.hubs, "hubs")
 
 
 @dataclass(frozen=True)
@@ -115,16 +159,24 @@ class Impact:
     distance: Annotated[int, "Steps from the changed node."]
     via: Annotated[str, "Relation through which it depends, such as `calls`."]
 
+    def __str__(self) -> str:
+        return f"{self.distance}  {self.via:<10} {self.node}"
+
 
 @dataclass(frozen=True)
 class ImpactResult:
     """What a change to a node can reach."""
 
     node: Annotated[Node, "The changed node."]
-    depth: Annotated[int, "Maximum distance that was followed."]
+    depth: Annotated[int, "The depth limit, or the largest distance reached when there was no limit."]
     files: Annotated[tuple[str, ...], "Distinct source files of the dependents."]
     impacts: Annotated[tuple[Impact, ...], "Dependents, nearest first."]
     truncated: Annotated[bool, "True when `limit` cut the list."]
+
+    def __str__(self) -> str:
+        more = " (cut by `limit`)" if self.truncated else ""
+        header = f"{len(self.impacts)} dependents of {self.node.label} in {len(self.files)} files{more}. Distance, relation, node:"
+        return _listing(header, self.impacts, "impacts")
 
 
 @dataclass(frozen=True)
@@ -138,6 +190,10 @@ class DomainFinding:
     line: Annotated[int | None, "1-based line, if known."]
     element: Annotated[str, "The element as `kind:service:name`, or empty."]
     plugin: Annotated[str, "The plugin that reported it."]
+
+    def __str__(self) -> str:
+        where = f"{self.file}:{self.line}" if self.line else self.file
+        return f"{self.severity} {self.code} {where} {self.message}".replace("  ", " ")
 
 
 @dataclass(frozen=True)
@@ -159,6 +215,16 @@ class DomainReport:
     plugin_errors: Annotated[tuple[str, ...], "Plugins that failed to load or run."]
     truncated: Annotated[bool, "True when `limit` cut the findings."]
 
+    def __str__(self) -> str:
+        if not self.plugins:
+            return "No domain plugin applies to this project."
+        counts = ", ".join(f"{count} {kind}" for kind, count in self.counts.items())
+        header = (
+            f"Domain ({', '.join(self.plugins)}): {counts}, {self.relations} links. "
+            f"{self.errors} errors, {self.warnings} warnings. Diagrams: {self.markdown_path}"
+        )
+        return _listing(header, self.findings, "findings", 20)
+
 
 @dataclass(frozen=True)
 class Reference:
@@ -173,6 +239,9 @@ class Reference:
     text: Annotated[str, "The name as written; an import alias differs from the symbol name."]
     qualified: Annotated[bool, "True for a qualified site: `obj.name`, `mod::name` or `ns/name`."]
 
+    def __str__(self) -> str:
+        return f"{self.file}:{self.line}:{self.column}  {self.role}  {self.text}"
+
 
 @dataclass(frozen=True)
 class ReferencesResult:
@@ -183,6 +252,10 @@ class ReferencesResult:
     files: Annotated[tuple[str, ...], "Distinct files with a site."]
     references: Annotated[tuple[Reference, ...], "Sites in file and position order."]
     truncated: Annotated[bool, "True when `limit` cut the list."]
+
+    def __str__(self) -> str:
+        header = f"{self.total} sites of {self.node.label} in {len(self.files)} files:"
+        return _listing(header, self.references, "references")
 
 
 @dataclass(frozen=True)
@@ -228,14 +301,66 @@ class RenameResult:
         return "\n".join(lines)
 
 
+@dataclass(frozen=True)
+class CallEdit:
+    """One added parameter or argument."""
+
+    file: Annotated[str, "Source file, relative to the project root."]
+    line: Annotated[int, "1-based line of the name."]
+    kind: Annotated[str, "`definition` or `call`."]
+    text: Annotated[str, "The inserted text, such as `, currency string`."]
+
+
+@dataclass(frozen=True)
+class SignatureResult:
+    """A parameter change preview, or the change that was written."""
+
+    node: Annotated[Node, "The function or method."]
+    parameter: Annotated[str, "The added parameter, as written in the definition."]
+    argument: Annotated[str, "The argument added to each call."]
+    applied: Annotated[bool, "True when the files were written."]
+    files: Annotated[tuple[str, ...], "Files that the change touches."]
+    edits: Annotated[tuple[CallEdit, ...], "Every insertion."]
+    conflicts: Annotated[tuple[str, ...], "Sites that block the change. With a conflict, nothing is written."]
+    diff: Annotated[str, "Unified diff of the change."]
+
+    def __str__(self) -> str:
+        """A short summary: counts, conflicts and the start of the diff."""
+        calls = sum(1 for edit in self.edits if edit.kind == "call")
+        change = f"parameter {self.parameter} of {self.node.label}: {calls} calls in {len(self.files)} files"
+        if self.conflicts:
+            return "\n".join([f"Blocked {change}. Nothing was written. Conflicts:", *self.conflicts])
+        if self.applied:
+            return "\n".join([f"Added {change}.", *self.files])
+        return f"Preview {change}. Call again with apply=True to write.\n{_clip_lines(self.diff, 60)}"
+
+
 def _relative(root: Path, file: str) -> str:
     path = Path(file)
     return path.relative_to(root).as_posix() if path.is_relative_to(root) else file
 
 
+def _within(file: str | None, scope: str) -> bool:
+    """True when `file` is in the folder or file `scope`, a path prefix or a glob."""
+    if not file:
+        return False
+    scope = scope.removeprefix("./")
+    if any(c in scope for c in "*?["):
+        return fnmatch.fnmatch(file, scope)
+    return file == scope or file.startswith(scope.rstrip("/") + "/")
+
+
 def _raw(graph: g.Graph) -> dict:
     """The graph.json shape that `graphify.refactor` reads, from the cached graph."""
     return {"nodes": list(graph.nodes.values()), "links": [dataclasses.asdict(link) for link in graph.links]}
+
+
+def _listing(header: str, rows, field: str, limit: int = 40) -> str:
+    """`header`, then one line for each of the first `limit` rows, then a count of the rest."""
+    lines = [header] + [f"  {row}" for row in rows[:limit]]
+    if len(rows) > limit:
+        lines.append(f"  … {len(rows) - limit} more in `{field}`.")
+    return "\n".join(lines) if rows else f"{header} none"
 
 
 def _clip_lines(text: str, limit: int) -> str:
@@ -428,6 +553,14 @@ class GraphifyTools:
             seconds=seconds,
         )
 
+    def _graph(self, path: Path) -> g.Graph:
+        """The graph of a project. Builds it when it is missing, updates it when a source file changed."""
+        if not g.graph_path(path).is_file():
+            self._update(path)
+        elif g.stale(g.load(path), path):
+            self._update(path)
+        return g.load(path)
+
     def status(self, root: str = ".") -> GraphStatus:
         """Report whether a project has a graph, and its size and age. Builds nothing.
 
@@ -463,7 +596,7 @@ class GraphifyTools:
             root: Project directory, relative to the workspace root.
             limit: Maximum count of returned nodes.
         """
-        graph = g.load(self._root(root))
+        graph = self._graph(self._root(root))
         ids, total = g.search(graph, pattern, limit)
         return SearchResult(pattern, total, tuple(_node(graph, node_id) for node_id in ids))
 
@@ -475,7 +608,7 @@ class GraphifyTools:
             root: Project directory, relative to the workspace root.
             limit: Maximum count of edges in each direction.
         """
-        graph = g.load(self._root(root))
+        graph = self._graph(self._root(root))
         node_id = g.resolve(graph, node)
         out = graph.outgoing.get(node_id, [])
         inc = graph.incoming.get(node_id, [])
@@ -494,7 +627,7 @@ class GraphifyTools:
             target: End node: id, label or name.
             root: Project directory, relative to the workspace root.
         """
-        graph = g.load(self._root(root))
+        graph = self._graph(self._root(root))
         start, end = g.resolve(graph, source), g.resolve(graph, target)
         steps = g.shortest_path(graph, start, end)
         return PathResult(
@@ -504,7 +637,7 @@ class GraphifyTools:
             steps=tuple(_edge(graph, link, node_id) for node_id, link in steps if link is not None),
         )
 
-    def hubs(self, root: str = ".", limit: int = 20, relation: str | None = "calls") -> tuple[Hub, ...]:
+    def hubs(self, root: str = ".", limit: int = 20, relation: str | None = "calls") -> HubsResult:
         """List the most connected nodes: the code that much else depends on.
 
         Args:
@@ -512,25 +645,34 @@ class GraphifyTools:
             limit: Count of nodes to return.
             relation: Count only this relation, such as `calls` or `imports`. None counts all.
         """
-        graph = g.load(self._root(root))
+        graph = self._graph(self._root(root))
         relations = frozenset({relation}) if relation else None
-        return tuple(Hub(_node(graph, node_id), degree) for node_id, degree in g.hubs(graph, limit, relations))
+        return HubsResult(
+            tuple(Hub(_node(graph, node_id), degree) for node_id, degree in g.hubs(graph, limit, relations))
+        )
 
-    def affected(self, node: str, root: str = ".", depth: int = 2, limit: int = 100) -> ImpactResult:
+    def affected(
+        self, node: str, root: str = ".", depth: int | None = None, limit: int = 100, within: str | None = None
+    ) -> ImpactResult:
         """List the code that a change to a node can break: its callers, importers and users.
 
         Args:
             node: Changed node: id, label, name or a qualified name (`ns/name`, `module.name`, `Class.method`, `crate::m::name`) or `file::name`.
             root: Project directory, relative to the workspace root.
-            depth: How many dependency steps to follow back.
+            depth: How many dependency steps to follow back. None follows every step.
             limit: Maximum count of returned dependents.
+            within: Keep only dependents in this folder or file: a path prefix such as
+                `src/handlers/` or a glob such as `**/*_test.py`. The search still follows every step.
         """
-        graph = g.load(self._root(root))
+        graph = self._graph(self._root(root))
         node_id = g.resolve(graph, node)
-        rows = g.affected(graph, node_id, max(1, depth))
+        rows = g.affected(graph, node_id, max(1, depth) if depth else len(graph.nodes))
+        if within:
+            rows = [row for row in rows if _within(_node(graph, row[0]).file, within)]
         impacts = tuple(Impact(_node(graph, other), distance, link.relation) for other, distance, link in rows[:limit])
         files = tuple(sorted({impact.node.file for impact in impacts if impact.node.file}))
-        return ImpactResult(_node(graph, node_id), depth, files, impacts, len(rows) > limit)
+        reached = max((impact.distance for impact in impacts), default=0)
+        return ImpactResult(_node(graph, node_id), depth or reached, files, impacts, len(rows) > limit)
 
     def references(self, node: str, root: str = ".", limit: int = 200) -> ReferencesResult:
         """List every exact site of a symbol: its definition, uses, member calls and imports.
@@ -538,7 +680,6 @@ class GraphifyTools:
         Works for functions, methods, classes and Clojure vars in every language with a
         tree-sitter grammar. Resolution follows imports, aliases, receiver types and
         locals, so a parameter, a field or another symbol with the same name never counts.
-        The files come from the graph; run graphify.build() after you add files.
 
         Args:
             node: The symbol: id, label or a qualified name (`ns/name`, `module.name`, `Class.method`, `crate::m::name`) or `file::name`.
@@ -548,7 +689,7 @@ class GraphifyTools:
         from graphify import refactor
 
         path = self._root(root)
-        graph = g.load(path)
+        graph = self._graph(path)
         node_id = g.resolve(graph, node)
         sites = refactor.references(_raw(graph), node_id, path)
         found = tuple(Reference(_relative(path, s.file), s.line, s.col, s.role, s.text, s.qualified) for s in sites)
@@ -559,11 +700,11 @@ class GraphifyTools:
         """Rename a symbol at every site that resolves to it, across files.
 
         Works for functions, methods, classes and Clojure vars in every language with a
-        tree-sitter grammar. Without `apply`, nothing is written: print the preview, check
-        `conflicts` and `mentions`, then call again with `apply=True`. A conflict blocks the
-        write: an invalid name, a file that already uses the new name, an override or trait
-        method, or a common method name on receivers of unknown type. Strings, comments and
-        keywords stay; `text_mentions` counts them. A written rename updates the graph.
+        tree-sitter grammar. With `apply=True`, the files are written unless a conflict
+        blocks the rename: an invalid name, a file that already uses the new name, an override
+        or trait method, or a common method name on receivers of unknown type. Without
+        `apply`, nothing is written. Strings, comments and keywords stay; `text_mentions`
+        counts them. A written rename updates the graph.
 
         Args:
             node: The symbol: id, label or a qualified name (`ns/name`, `module.name`, `Class.method`, `crate::m::name`) or `file::name`.
@@ -574,7 +715,7 @@ class GraphifyTools:
         from graphify import refactor
 
         path = self._root(root)
-        graph = g.load(path)
+        graph = self._graph(path)
         node_id = g.resolve(graph, node)
         plan = refactor.plan_rename(_raw(graph), node_id, new_name, path)
         contents = refactor.rewrite(plan) if plan.edits else {}
@@ -594,6 +735,54 @@ class GraphifyTools:
             mentions=tuple(f"{_relative(path, m.file)}:{m.line} {m.text}" for m in plan.mentions if m.kind == "symbol"),
             text_mentions=sum(1 for m in plan.mentions if m.kind != "symbol"),
             diff=_unified_diff(path, contents),
+        )
+
+    def add_parameter(
+        self, node: str, parameter: str, argument: str, root: str = ".", apply: bool = False
+    ) -> SignatureResult:
+        """Add a parameter to a function or method and pass an argument at every call.
+
+        Finds the calls with the same exact resolution as `references`, so another
+        function with the same name stays unchanged. The parameter goes last in the
+        definition and the argument goes last in each call. With `apply=True`, the
+        files are written unless a conflict blocks the change: a use that is not a call,
+        or a Python list that ends with `*args`, `**kwargs` or a default.
+
+        Args:
+            node: The function or method: id, label, qualified name or `file::name`.
+            parameter: The parameter as the language writes it, such as `currency string`,
+                `currency: str` or `currency` (Clojure).
+            argument: The value for each call, such as `"EUR"`.
+            root: Project directory, relative to the workspace root.
+            apply: Write the files when the plan has no conflict.
+        """
+        from graphify import refactor
+
+        from vis_graphify import calls
+
+        path = self._root(root)
+        graph = self._graph(path)
+        node_id = g.resolve(graph, node)
+        sites = refactor.references(_raw(graph), node_id, path)
+        old = {site.file: (path / site.file).read_bytes() for site in sites}
+        texts = {file: data.decode("utf-8", "replace") for file, data in old.items()}
+        plan = calls.plan(sites, parameter, argument, texts)
+        new = calls.rewrite(plan, old)
+        applied = False
+        if apply and not plan.conflicts:
+            for file, data in new.items():
+                (path / file).write_bytes(data)
+            applied = True
+            self._update(path)
+        return SignatureResult(
+            node=_node(graph, node_id),
+            parameter=parameter,
+            argument=argument,
+            applied=applied,
+            files=tuple(sorted(_relative(path, file) for file in new)),
+            edits=tuple(CallEdit(_relative(path, i.file), i.line, i.kind, i.text) for i in plan.inserts),
+            conflicts=tuple(c.replace(f"{path}/", "") for c in plan.conflicts),
+            diff=_unified_diff(path, {str(path / file): (old[file], data) for file, data in new.items()}),
         )
 
     def domain(
