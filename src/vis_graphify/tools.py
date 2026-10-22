@@ -357,7 +357,7 @@ class GraphifyTools:
         """Find graph nodes whose label, id or file matches a case-insensitive regex.
 
         Args:
-            pattern: Regex, for example `run-tests` or `gateway/.*client`.
+            pattern: Regex, for example `run-tests` or `gateway/.*client`. An invalid regex, such as `*out*`, matches as text.
             root: Project directory, relative to the workspace root.
             limit: Maximum count of returned nodes.
         """

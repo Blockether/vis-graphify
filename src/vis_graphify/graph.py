@@ -121,8 +121,10 @@ def resolve(graph: Graph, reference: str) -> str:
     """The id of the one node that `reference` names.
 
     The first rule with matches wins: exact id, exact label, label without the
-    trailing `()`, the last segment of a qualified label (`ns/name` or
-    `module.name`), then a case-insensitive substring of the label.
+    trailing `()`, the `module/name` of the node metadata (this also finds
+    Clojure protocol methods, labelled `.-method()`), the last segment of a
+    qualified label (`ns/name` or `module.name`), then a case-insensitive
+    substring of the label.
 
     Raises:
         NodeNotFound: No node matches.
@@ -136,6 +138,7 @@ def resolve(graph: Graph, reference: str) -> str:
     rules = (
         lambda node: node.get("label") == reference,
         lambda node: _bare(str(node.get("label", ""))) == bare,
+        lambda node: _metadata_name(node) == bare,
         lambda node: re.split(r"[/.]", bare)[-1] == _bare(str(node.get("label", ""))) and _qualifies(node, bare),
         lambda node: lowered in str(node.get("label", "")).lower(),
     )
@@ -146,6 +149,14 @@ def resolve(graph: Graph, reference: str) -> str:
         if found:
             raise AmbiguousNode(reference, found)
     raise NodeNotFound(f"No node matches {reference!r}. Try graphify.search().")
+
+
+def _metadata_name(node: dict) -> str | None:
+    """The `module/name` of a node whose metadata has both, such as a Clojure var."""
+    meta = node.get("metadata") or {}
+    if meta.get("module") and meta.get("name"):
+        return f"{meta['module']}/{meta['name']}"
+    return None
 
 
 def _qualifies(node: dict, qualified: str) -> bool:
@@ -164,9 +175,13 @@ def _qualifies(node: dict, qualified: str) -> bool:
 def search(graph: Graph, pattern: str, limit: int) -> tuple[list[str], int]:
     """Ids of nodes whose label, id or source file match a case-insensitive regex.
 
+    A pattern that is not a valid regex, such as the Clojure name `*out*`, matches as plain text.
     Returns the first `limit` ids, best first, and the total match count.
     """
-    regex = re.compile(pattern, re.IGNORECASE)
+    try:
+        regex = re.compile(pattern, re.IGNORECASE)
+    except re.error:
+        regex = re.compile(re.escape(pattern), re.IGNORECASE)
     found = [
         node_id
         for node_id, node in graph.nodes.items()

@@ -80,3 +80,20 @@ def test_affected_respects_depth(project):
 
 def test_hubs_counts_relation(project):
     assert g.hubs(g.load(project), 2, frozenset({"calls"}))[0] == ("src_app_core_run", 2)
+
+
+def test_search_matches_an_invalid_regex_as_text(project):
+    ids, total = g.search(g.load(project), "connect(", 10)
+    assert ids == ["src_app_db_connect"] and total == 1
+
+
+def test_resolve_protocol_method_by_metadata_name(tmp_path):
+    method = {
+        "id": "src_app_store_istore_fetch",
+        "label": ".-fetch()",
+        "source_file": "src/app/store.clj",
+        "metadata": {"language": "clojure", "kind": "var", "module": "app.store", "name": "-fetch"},
+    }
+    impl = {"id": "src_app_store_memstore_fetch", "label": ".-fetch()", "source_file": "src/app/store.clj"}
+    graph = g.parse(tmp_path / "graph.json", {"nodes": [method, impl], "links": []})
+    assert g.resolve(graph, "app.store/-fetch") == "src_app_store_istore_fetch"
