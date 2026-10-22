@@ -44,7 +44,25 @@ Each trial writes `verifier/grade.json` (tokens, wall time, tools, output size) 
 
 ## Results
 
-Model `claude-opus-5-5`. Vanilla: 3 trials for each task. Graphify: 6 trials, 3 with 0.4.0 and 3 with 0.4.1. Tokens, calls and wall time are means for each trial. A trial uses 5 to 8 model calls, and each call sends the system prompt again, so the call count sets most of the token cost.
+Model `claude-opus-5-5`. Vanilla: 3 trials for each task. Graphify: 6 trials, 3 with 0.5.1 and 3 with 0.5.2. Tokens and model calls are means for each trial. Each model call sends the system prompt again, so the call count sets most of the token cost.
+
+| Task | Vanilla pass | Tokens | Calls | Graphify pass | Tokens | Calls |
+|---|---|---|---|---|---|---|
+| clj-impact | 2/3 | 127k | 8 | 6/6 | 59k | 4.3 |
+| clj-rename-var | 2/3 | 102k | 6.3 | 6/6 | 24k | 2 |
+| go-add-param | 3/3 | 83k | 5.3 | 6/6 | 23k | 2 |
+| go-rename-type | 3/3 | 80k | 5.3 | 6/6 | 28k | 2.3 |
+| py-impact | 3/3 | 88k | 6 | 6/6 | 84k | 5.5 |
+| py-rename-method | 3/3 | 125k | 7 | 6/6 | 23k | 2 |
+| rs-rename-fn | 3/3 | 120k | 6.7 | 6/6 | 23k | 2 |
+| ts-impact | 3/3 | 115k | 6.7 | 6/6 | 60k | 4.3 |
+| ts-rename-export | 3/3 | 79k | 5 | 6/6 | 24k | 2 |
+
+Graphify passes 54 of 54 trials and vanilla passes 25 of 27. The mean for each trial is 39k tokens against 102k: 62% fewer. The sum of the mean tokens over the nine tasks is 348k against 919k. A rename or `add_parameter` task takes 2 model calls: one graphify call, then the answer. In the impact tasks, some agents still read the handler files to confirm the result. In `py-impact`, that makes the mean close to vanilla (84k against 88k). Wall times are not compared: the first model response took 1 to 4 minutes in some 0.5.2 trials.
+
+### Earlier results (0.4)
+
+Model `claude-opus-5-5`. Vanilla: 3 trials for each task. Graphify: 6 trials, 3 with 0.4.0 and 3 with 0.4.1. Tokens, calls and wall time are means for each trial.
 
 | Task | Vanilla pass | Wall | Tokens | Calls | Graphify pass | Wall | Tokens | Calls |
 |---|---|---|---|---|---|---|---|---|
@@ -85,3 +103,5 @@ With 0.3.3, all 18 trials pass. The sum of the mean tokens is 12% lower than van
 - In `ts-impact`, calls through `import * as repo` had no edge. graphify v0.9.93-blockether.8 resolves them.
 - `go-add-param` asks for a change beyond a rename. 0.4.0 adds `graphify.add_parameter`, which changes the definition and every exact call in one call.
 - After a rename, agents read the files again because the diff was cut at 60 lines. 0.4.1 prints each changed line instead.
+- After a rename, agents still listed the project, read files and ran `go vet` or `tsc` themselves. 0.5.0 runs the project check after each write and prints `Check ...: passed`. The prompt tells agents to make the graphify call first and to answer from its result.
+- In the impact tasks, agents read the handler files to confirm indirect calls and grepped for other definitions. 0.5.1 prints the nodes between each dependent and the change, and 0.5.2 lists the other symbols that spell the name.
