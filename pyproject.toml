@@ -7,7 +7,7 @@ requires-python = ">=3.12"
 license = "Apache-2.0"
 dependencies = [
   "vis-agent>=0.2.45",
-  "graphifyy @ git+https://github.com/Blockether/graphify@v0.9.84-blockether.5",
+  "graphifyy @ git+https://github.com/Blockether/graphify@v0.9.93-blockether.2",
 ]
 
 [tool.vis]
