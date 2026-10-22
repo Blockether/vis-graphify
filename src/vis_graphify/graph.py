@@ -122,9 +122,9 @@ def resolve(graph: Graph, reference: str) -> str:
 
     The first rule with matches wins: exact id, exact label, label without the
     trailing `()`, the `module/name` of the node metadata (this also finds
-    Clojure protocol methods, labelled `.-method()`), the last segment of a
-    qualified label (`ns/name` or `module.name`), then a case-insensitive
-    substring of the label.
+    Clojure protocol methods, labelled `.-method()`), a qualified name (`ns/name`,
+    `module.name`, `Class.method` or `crate::module::name`), then a
+    case-insensitive substring of the label.
 
     Raises:
         NodeNotFound: No node matches.
@@ -139,7 +139,7 @@ def resolve(graph: Graph, reference: str) -> str:
         lambda node: node.get("label") == reference,
         lambda node: _bare(str(node.get("label", ""))) == bare,
         lambda node: _metadata_name(node) == bare,
-        lambda node: re.split(r"[/.]", bare)[-1] == _bare(str(node.get("label", ""))) and _qualifies(node, bare),
+        lambda node: _qualifies(graph, node, bare),
         lambda node: lowered in str(node.get("label", "")).lower(),
     )
     for rule in rules:
@@ -159,16 +159,30 @@ def _metadata_name(node: dict) -> str | None:
     return None
 
 
-def _qualifies(node: dict, qualified: str) -> bool:
-    """Whether a qualified reference such as `my.ns/fn` names this node."""
-    name = re.split(r"[/.]", qualified)[-1]
-    prefix = qualified[: -len(name) - 1]
-    if not prefix:
+_QUALIFIED = re.compile(r"^(.+)(?:::|[/.])([^/.:]+)$")
+
+
+def _qualifies(graph: Graph, node: dict, qualified: str) -> bool:
+    """Whether a qualified reference such as `my.ns/fn` or `Ledger.post` names this node.
+
+    The module of the node metadata decides first, then the class that owns a method,
+    then the source file path.
+    """
+    match = _QUALIFIED.match(qualified)
+    if not match or _bare(str(node.get("label", ""))).lstrip(".") != match.group(2):
         return False
+    prefix = re.sub(r"^(?:crate|self|super)::", "", match.group(1))
     module = str((node.get("metadata") or {}).get("module") or "")
     if module:
         return module == prefix
-    hint = prefix.replace("-", "_").replace(".", "/").lower()
+    owners = {
+        _bare(str(graph.nodes.get(link.source, {}).get("label", "")))
+        for link in graph.incoming.get(node.get("id", ""), ())
+        if link.relation == "method"
+    }
+    if owners:
+        return re.split(r"::|[/.]", prefix)[-1] in owners
+    hint = prefix.replace("::", "/").replace("-", "_").replace(".", "/").lower()
     return hint in str(node.get("source_file", "")).replace("-", "_").lower()
 
 

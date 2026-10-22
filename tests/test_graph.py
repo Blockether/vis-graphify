@@ -97,3 +97,25 @@ def test_resolve_protocol_method_by_metadata_name(tmp_path):
     impl = {"id": "src_app_store_memstore_fetch", "label": ".-fetch()", "source_file": "src/app/store.clj"}
     graph = g.parse(tmp_path / "graph.json", {"nodes": [method, impl], "links": []})
     assert g.resolve(graph, "app.store/-fetch") == "src_app_store_istore_fetch"
+
+
+def test_resolve_qualified_method_type_and_path(tmp_path):
+    nodes = [
+        {"id": "ledger", "label": "Ledger", "source_file": "shop/ledger.py"},
+        {"id": "ledger_post", "label": ".post()", "source_file": "shop/ledger.py"},
+        {"id": "client", "label": "HttpClient", "source_file": "shop/http.py"},
+        {"id": "client_post", "label": ".post()", "source_file": "shop/http.py"},
+        {"id": "orders_order", "label": "Order", "source_file": "orders/order.go"},
+        {"id": "audit_order", "label": "Order", "source_file": "audit/audit.go"},
+        {"id": "util_sum", "label": "sum()", "source_file": "src/util.rs"},
+        {"id": "net_sum", "label": "sum()", "source_file": "src/net.rs"},
+    ]
+    links = [
+        {"source": "ledger", "target": "ledger_post", "relation": "method"},
+        {"source": "client", "target": "client_post", "relation": "method"},
+    ]
+    graph = g.parse(tmp_path / "graph.json", {"nodes": nodes, "links": links})
+    assert g.resolve(graph, "Ledger.post") == "ledger_post"
+    assert g.resolve(graph, "HttpClient.post()") == "client_post"
+    assert g.resolve(graph, "orders.Order") == "orders_order"
+    assert g.resolve(graph, "crate::util::sum") == "util_sum"
