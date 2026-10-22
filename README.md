@@ -83,6 +83,12 @@ uvx ruff format --check . && uvx ruff check .
 uv run --with pytest pytest tests -q
 ```
 
+## Benchmark
+
+[`bench/`](bench/README.md) measures extraction, queries and change tracking on real Clojure
+projects against clj-kondo. On the Vis sources (235 files), definitions have a recall of 0.999,
+references a recall of 0.996, and `explain()` finds 99.8 percent of the callers in a few milliseconds.
+
 ## License
 
 Apache-2.0. graphify is MIT-licensed; see `NOTICE`.
