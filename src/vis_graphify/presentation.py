@@ -19,6 +19,7 @@ from vis_graphify.tools import (
     RenameResult,
     SearchResult,
     SignatureResult,
+    _is_file,
 )
 
 
@@ -37,11 +38,14 @@ def _plural(count: int, word: str) -> str:
 
 
 def _node_table(nodes: tuple[Node, ...], extra: tuple[str, ...] = (), values=None) -> vis.ActivityTable:
+    """Node, Kind and Location columns. Kind stays out when every node has the same kind."""
+    kinds = len({node.kind for node in nodes}) > 1
     rows = tuple(
-        (node.label, node.kind, _where(node)) + (tuple(values(i)) if values else ()) for i, node in enumerate(nodes)
+        (node.label,) + ((node.kind,) if kinds else ()) + (_where(node),) + (tuple(values(i)) if values else ())
+        for i, node in enumerate(nodes)
     )
     return vis.ActivityTable(
-        columns=("Node", "Kind", "Location") + extra,
+        columns=("Node",) + (("Kind",) if kinds else ()) + ("Location",) + extra,
         rows=rows,
         paths=tuple(node.file for node in nodes),
     )
@@ -60,7 +64,7 @@ def status(result: GraphStatus) -> vis.ActivityPresentation:
         return vis.ActivityPresentation(
             "Check code graph",
             "no graph yet",
-            (vis.ActivityText(f"Run graphify.build() to create {result.graph_path}."),),
+            (vis.ActivityText(f"The next query builds {result.graph_path}."),),
         )
     rows = tuple((relation, str(count)) for relation, count in result.relations.items())
     return vis.ActivityPresentation(
@@ -143,18 +147,30 @@ def affected(result: ImpactResult) -> vis.ActivityPresentation:
         return vis.ActivityPresentation(
             "Find affected code", "no dependents", (vis.ActivityText(f"Nothing depends on {result.node.label}."),)
         )
-    nodes = tuple(impact.node for impact in result.impacts)
-    more = ", truncated" if result.truncated else ""
+    impacts = tuple(impact for impact in result.impacts if not _is_file(impact.node)) or result.impacts
+    more = ", list cut by limit" if result.truncated else ""
+    content: list = []
+    if result.functions:
+        public = [name for name in result.functions if name not in result.private]
+        text = f"Functions: {', '.join(public)}" if public else "No public functions."
+        if result.private:
+            text += f"\nPrivate: {', '.join(result.private)}"
+        content.append(vis.ActivityText(text))
+    content.append(
+        _node_table(
+            tuple(impact.node for impact in impacts),
+            ("Steps", "Through"),
+            lambda i: (str(impacts[i].distance), " → ".join(impacts[i].chain) or impacts[i].via),
+        )
+    )
+    if result.others:
+        content.append(vis.ActivityText("Not counted, same name:\n" + "\n".join(result.others)))
+    calls = sum(1 for impact in impacts if impact.node.label.endswith("()"))
+    counted = _plural(calls, "function") if calls else _plural(len(impacts), "dependent")
     return vis.ActivityPresentation(
         "Find affected code",
-        f"{_plural(len(result.impacts), 'dependent')} in {_plural(len(result.files), 'file')}{more}",
-        (
-            _node_table(
-                nodes,
-                ("Distance", "Via"),
-                lambda i: (str(result.impacts[i].distance), result.impacts[i].via),
-            ),
-        ),
+        f"{result.node.label}: {counted} in {_plural(len(result.files), 'file')}{more}",
+        tuple(content),
     )
 
 
@@ -178,6 +194,19 @@ def references(result: ReferencesResult) -> vis.ActivityPresentation:
     )
 
 
+def _check(check: str) -> tuple[str, tuple]:
+    """The summary suffix and the content of a project check: `, go vet passed`, and its errors on failure."""
+    if not check:
+        return "", ()
+    head, _, rest = check.partition("\n")
+    command, _, outcome = head.rpartition(": ")
+    words = command.split(" ")
+    stop = next((i for i, word in enumerate(words) if word[:1] in "-./"), len(words))
+    tool = " ".join(words[: max(stop, 1)])
+    content = (vis.ActivityCode(f"{head}\n{rest}"),) if rest else ()
+    return f", {tool} {outcome}", content
+
+
 def rename(result: RenameResult) -> vis.ActivityPresentation:
     change = f"{result.old} → {result.new}"
     if result.conflicts:
@@ -186,13 +215,14 @@ def rename(result: RenameResult) -> vis.ActivityPresentation:
             "Rename symbol", f"{change}: not written, {_plural(len(result.conflicts), 'conflict')}", content
         )
     state = "renamed" if result.applied else "preview"
-    content: tuple = (vis.ActivityDiff(_clip(result.diff, 8000), "diff"),) if result.diff else ()
+    checked, failure = _check(result.check)
+    content: tuple = failure + ((vis.ActivityDiff(_clip(result.diff, 8000), "diff"),) if result.diff else ())
     if result.mentions:
         kept = "\n".join(result.mentions[:10]) + ("\n…" if len(result.mentions) > 10 else "")
         content += (vis.ActivityText(f"Other code that spells {result.old} and stays:\n{kept}"),)
     return vis.ActivityPresentation(
         "Rename symbol",
-        f"{change}: {state}, {_plural(len(result.edits), 'edit')} in {_plural(len(result.files), 'file')}",
+        f"{change}: {state}, {_plural(len(result.edits), 'edit')} in {_plural(len(result.files), 'file')}{checked}",
         content,
     )
 
@@ -206,10 +236,11 @@ def add_parameter(result: SignatureResult) -> vis.ActivityPresentation:
         )
     state = "written" if result.applied else "preview"
     calls = sum(1 for edit in result.edits if edit.kind == "call")
-    content: tuple = (vis.ActivityDiff(_clip(result.diff, 8000), "diff"),) if result.diff else ()
+    checked, failure = _check(result.check)
+    content: tuple = failure + ((vis.ActivityDiff(_clip(result.diff, 8000), "diff"),) if result.diff else ())
     return vis.ActivityPresentation(
         "Add parameter",
-        f"{change}: {state}, {_plural(calls, 'call')} in {_plural(len(result.files), 'file')}",
+        f"{change}: {state}, {_plural(calls, 'call')} in {_plural(len(result.files), 'file')}{checked}",
         content,
     )
 

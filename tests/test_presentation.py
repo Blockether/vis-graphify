@@ -45,7 +45,11 @@ def test_success_states(tools, project):
         "3 hops: run() → connect()"
     )
     assert summary(presentation.hubs(tools.hubs(limit=2))) == "top 2, led by run()"
-    assert summary(presentation.affected(tools.affected("connect", depth=3))) == "3 dependents in 3 files"
+    impact = presentation.affected(tools.affected("connect", depth=3))
+    assert summary(impact) == "connect(): 3 functions in 3 files"
+    assert impact.content[0].text == "Functions: query, run"
+    assert impact.content[1].columns == ("Node", "Location", "Steps", "Through")
+    assert impact.content[1].rows[-1][-1] == "run() → query()"
     build = BuildResult(str(project), "g.json", 6, 4, 1.5)
     assert summary(presentation.build(build)) == "6 nodes, 4 edges in 1.5 s"
 
@@ -157,6 +161,8 @@ def test_reference_and_rename_states(tools):
     assert summary(presentation.rename(preview)) == "connect → open: preview, 1 edit in 1 file"
     done = RenameResult(node, "connect", "open", True, ("src/app/db.clj",), (edit,), (), (), 0, "-a\n+b\n")
     assert summary(presentation.rename(done)) == "connect → open: renamed, 1 edit in 1 file"
+    checked = dataclasses.replace(done, check="tsc --noEmit -p .: passed")
+    assert summary(presentation.rename(checked)) == "connect → open: renamed, 1 edit in 1 file, tsc passed"
     blocked = RenameResult(node, "connect", "run", False, (), (), ("x already uses `run`.",), (), 0, "")
     assert summary(presentation.rename(blocked)) == "connect → run: not written, 1 conflict"
 
@@ -174,7 +180,11 @@ def test_add_parameter_states(tools):
     edit = CallEdit("src/app/db.clj", 9, "call", " opts")
     preview = SignatureResult(node, "opts", "{}", False, ("src/app/db.clj",), (edit,), (), "-a\n+b\n")
     assert summary(presentation.add_parameter(preview)) == "connect() + opts: preview, 1 call in 1 file"
-    done = dataclasses.replace(preview, applied=True)
-    assert summary(presentation.add_parameter(done)) == "connect() + opts: written, 1 call in 1 file"
+    done = dataclasses.replace(preview, applied=True, check="go vet ./...: passed")
+    assert summary(presentation.add_parameter(done)) == "connect() + opts: written, 1 call in 1 file, go vet passed"
+    failed = dataclasses.replace(done, check="go vet ./...: failed\n./a.go:3:2: undefined: x")
+    shown = presentation.add_parameter(failed)
+    assert summary(shown) == "connect() + opts: written, 1 call in 1 file, go vet failed"
+    assert "undefined: x" in shown.content[0].text
     blocked = SignatureResult(node, "opts", "{}", False, (), (), ("x: used as a value.",), "")
     assert summary(presentation.add_parameter(blocked)) == "connect() + opts: not written, 1 conflict"

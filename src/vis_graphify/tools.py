@@ -181,20 +181,22 @@ class ImpactResult:
         tuple[str, ...],
         "Other nodes with the same name, which are not this node, each with the files of its direct users.",
     ] = ()
-    functions: Annotated[
-        tuple[str, ...], "Sorted names of the dependent functions; a private or unexported one ends with ` (private)`."
-    ] = ()
+    functions: Annotated[tuple[str, ...], "Sorted names of the dependent functions and methods."] = ()
+    private: Annotated[tuple[str, ...], "The names in `functions` that are private or not exported."] = ()
 
     def __str__(self) -> str:
         more = " (cut by `limit`)" if self.truncated else ""
-        header = f"{len(self.impacts)} dependents of {self.node.label} in {len(self.files)} files{more}. Distance, relation, node, then the nodes between:"
-        lines = [_listing(header, self.impacts, "impacts")]
+        rows = [impact for impact in self.impacts if not _is_file(impact.node)]
+        header = f"{len(rows)} dependents of {self.node.label} in {len(self.files)} files{more}. Distance, relation, node, then the nodes between:"
+        lines = [_listing(header, rows, "impacts")]
         name = self.node.label.removesuffix("()")
         if self.others:
             lines.append(f"Different nodes also named {name}; their users are not in this list:")
             lines += [f"  {other}" for other in self.others]
         if self.functions:
             lines.append(f"Dependent functions{'' if self.truncated else ', complete'}: {', '.join(self.functions)}")
+            if self.private:
+                lines.append(f"Private among them: {', '.join(self.private)}")
         return "\n".join(lines)
 
 
@@ -581,6 +583,11 @@ def _plugin_env(plugins: tuple[str, ...] | list[str] = ()) -> dict[str, str]:
     return env
 
 
+def _is_file(node: Node) -> bool:
+    """True for the node of a whole source file, such as `h04.py`."""
+    return bool(node.file) and node.label == Path(node.file).name
+
+
 _PRIVATE_DEFINITION = re.compile(r"^\s*(\(defn-|\(def\s+\^:private|private\s|fn\s|func\s+[a-z_])")
 
 
@@ -843,15 +850,9 @@ class GraphifyTools:
         )
         files = tuple(sorted({impact.node.file for impact in impacts if impact.node.file}))
         reached = max((impact.distance for impact in impacts), default=0)
-        functions = tuple(
-            sorted(
-                {
-                    impact.node.label.removesuffix("()") + (" (private)" if _private(path, impact.node) else "")
-                    for impact in impacts
-                    if impact.node.label.endswith("()")
-                }
-            )
-        )
+        callers = {
+            impact.node.label.removesuffix("()"): impact.node for impact in impacts if impact.node.label.endswith("()")
+        }
         return ImpactResult(
             _node(graph, node_id),
             depth or reached,
@@ -859,7 +860,8 @@ class GraphifyTools:
             impacts,
             len(rows) > limit,
             _others(graph, node_id),
-            functions,
+            tuple(sorted(callers)),
+            tuple(sorted(name for name, caller in callers.items() if _private(path, caller))),
         )
 
     def references(self, node: str, root: str = ".", limit: int = 200) -> ReferencesResult:
