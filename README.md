@@ -88,6 +88,7 @@ uv run --with pytest pytest tests -q
 [`bench/`](bench/README.md) measures extraction, queries and change tracking on real Clojure
 projects against clj-kondo. On the Vis sources (235 files), definitions have a recall of 0.999,
 references a recall of 0.996, and `explain()` finds 99.8 percent of the callers in a few milliseconds.
+A full build takes about 4 s, and an update after a one-file change about 5 s.
 
 ## License
 
