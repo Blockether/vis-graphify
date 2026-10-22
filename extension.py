@@ -7,7 +7,7 @@ import blockether.vis.extension as vis
 from vis_graphify import presentation
 from vis_graphify.tools import GraphifyTools, HubsResult, ImpactResult, ReferencesResult, SearchResult
 
-VERSION = "0.4.1"
+VERSION = "0.5.0"
 
 _Tag = Literal["observation", "mutation"]
 
@@ -59,20 +59,17 @@ _bind(
 )
 _bind("domain", "Map domain flows", presentation.domain, ("root", "plugins"), tag="mutation", show_start=True)
 
-PROMPT = """graphify surface active: a code graph of the workspace (tree-sitter AST, no LLM) for Python, JavaScript, TypeScript, Go, Rust, Java, Clojure and other languages.
-Each query builds the graph when it is missing and updates it after file changes.
-Pick the call for the question; each answers in one call:
-  graphify.affected(node, within="src/api/") what a change can break: every caller, importer and user, across all steps; `within` keeps one folder
-  graphify.references(node)                   every exact site of a symbol: definition, calls, imports, with file:line:column
-  graphify.rename(node, new_name, apply=True) rename a function, method, class or var everywhere; writes nothing on a conflict
-  graphify.add_parameter(node, "currency string", '"EUR"', apply=True)  add a last parameter and pass the argument at every call
-  graphify.explain(node) · graphify.shortest_path(source, target) · graphify.search(pattern) · graphify.hubs()
-  graphify.domain()                           edd-core commands, queries, events and Malli schemas -> DOMAIN.md
-These calls skip strings, comments and other symbols with the same name. Use them first, not ls, grep or reading every file.
-Name a node by id, label, bare name, qualified name (`ns/name`, `pkg.Name`, `Class.method`, `crate::mod::name`) or `file::name`. An ambiguous name raises an error that lists each candidate with its location.
-print(result) gives a short summary with file:line locations; read a field only for more detail.
-print(rename or add_parameter result) lists every changed line: check the change there, then run the project checks. Do not cat or grep the files again.
-Results are typed frozen objects; search, references, affected and hubs results iterate."""
+PROMPT = """graphify surface active: an exact code graph of the workspace (tree-sitter, no LLM) for Python, JS, TS, Go, Rust, Java, Clojure and more. It builds and updates itself.
+For these tasks, make one graphify call the first step, before any ls, cat, grep or shell:
+  print(graphify.affected(node, within="src/api/"))  what a change can break: every caller, importer and user, across all steps
+  print(graphify.references(node))                   every exact site of a symbol, with file:line:column
+  print(graphify.rename(node, new_name, apply=True)) rename a function, method, class, type or var everywhere
+  print(graphify.add_parameter(node, "currency string", '"EUR"', apply=True))  add a last parameter and an argument at every call
+Each call skips strings, comments and other symbols with the same name. affected and references are exact and complete: answer from them, without reading the files.
+After a write they run the project check (go vet, tsc, cargo check, clj-kondo or Python syntax). The printed result lists every changed line, every other spelling of the old name and the check result.
+That result is the diff review and the verification: when it says `passed`, reply at once. Do not read, grep, run checks or git again.
+Name a node by `pkg.Name`, `Class.method`, `ns/name`, `crate::mod::name` or bare name. When the task names the file, use `src/money/format.ts::name`. An ambiguous name raises an error that lists the candidates.
+Also: graphify.explain(node) · shortest_path(a, b) · search(pattern) · hubs() · domain() (edd-core flows -> DOMAIN.md)."""
 
 vis.register_extension(
     vis.Extension(

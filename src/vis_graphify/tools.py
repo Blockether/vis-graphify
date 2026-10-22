@@ -8,11 +8,13 @@ from __future__ import annotations
 import dataclasses
 import difflib
 import fnmatch
+import hashlib
 import json
 import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -286,6 +288,10 @@ class RenameResult:
     text_mentions: Annotated[int, "Count of strings, comments and keywords that spell the old name and stay."]
     diff: Annotated[str, "Unified diff of the change."]
     changes: Annotated[tuple[str, ...], "`file:line text` of each changed line, as it reads after the change."] = ()
+    check: Annotated[
+        str,
+        "The project check that ran after the write, such as `go vet ./...: passed`, with the first error lines on failure. Empty when none ran.",
+    ] = ""
 
     def __str__(self) -> str:
         """A short summary: counts, conflicts, each changed line and code mentions."""
@@ -297,8 +303,12 @@ class RenameResult:
         if self.mentions:
             more = [f"… {len(self.mentions) - 10} more in `mentions`."] if len(self.mentions) > 10 else []
             lines += [f"Other code that spells {self.old} and stays:", *self.mentions[:10], *more]
+        else:
+            lines.append(f"No other code spells {self.old}.")
         if self.text_mentions:
             lines.append(f"Kept {self.text_mentions} mentions in strings, comments and keywords.")
+        if self.check:
+            lines.append(f"Check {self.check}")
         return "\n".join(lines)
 
 
@@ -325,6 +335,10 @@ class SignatureResult:
     conflicts: Annotated[tuple[str, ...], "Sites that block the change. With a conflict, nothing is written."]
     diff: Annotated[str, "Unified diff of the change."]
     changes: Annotated[tuple[str, ...], "`file:line text` of each changed line, as it reads after the change."] = ()
+    check: Annotated[
+        str,
+        "The project check that ran after the write, such as `go vet ./...: passed`, with the first error lines on failure. Empty when none ran.",
+    ] = ""
 
     def __str__(self) -> str:
         """A short summary: counts, conflicts and each changed line."""
@@ -333,7 +347,10 @@ class SignatureResult:
         if self.conflicts:
             return "\n".join([f"Blocked {change}. Nothing was written. Conflicts:", *self.conflicts])
         head = f"Added {change}:" if self.applied else f"Preview {change}. Call again with apply=True to write:"
-        return f"{head}\n{_change_lines(self.changes) if self.changes else _clip_lines(self.diff, 60)}"
+        lines = [head, _change_lines(self.changes) if self.changes else _clip_lines(self.diff, 60)]
+        if self.check:
+            lines.append(f"Check {self.check}")
+        return "\n".join(lines)
 
 
 def _relative(root: Path, file: str) -> str:
@@ -386,6 +403,69 @@ def _clip_lines(text: str, limit: int) -> str:
     if len(lines) <= limit:
         return text.rstrip("\n")
     return "\n".join(lines[:limit] + [f"… {len(lines) - limit} more lines in `diff`."])
+
+
+_CHECK_TIMEOUT_S = 300
+
+
+def _cargo_target(root: Path) -> str:
+    """A target folder outside the project, so that `cargo check` adds no files to it."""
+    digest = hashlib.sha1(str(root).encode()).hexdigest()[:12]
+    return str(Path(tempfile.gettempdir()) / "vis-graphify-cargo" / digest)
+
+
+def _check_command(root: Path) -> tuple[list[str], dict | None] | None:
+    """The fast compile or lint check of the project at `root`, or None."""
+    if (root / "go.mod").exists() and shutil.which("go"):
+        return ["go", "vet", "./..."], None
+    if (root / "tsconfig.json").exists():
+        local = root / "node_modules" / ".bin" / "tsc"
+        tsc = str(local) if local.exists() else shutil.which("tsc")
+        if tsc:
+            return [tsc, "--noEmit", "-p", "."], None
+    if (root / "Cargo.toml").exists() and shutil.which("cargo"):
+        return ["cargo", "check", "-q"], {
+            **os.environ,
+            "CARGO_TARGET_DIR": os.environ.get("CARGO_TARGET_DIR") or _cargo_target(root),
+        }
+    if ((root / "deps.edn").exists() or (root / "project.clj").exists()) and shutil.which("clj-kondo"):
+        return ["clj-kondo", "--lint", *([d for d in ("src", "test") if (root / d).is_dir()] or ["."])], None
+    return None
+
+
+def _python_check(root: Path, files) -> str:
+    """Compile each changed Python file in memory; nothing is written."""
+    sources = [root / file for file in files if str(file).endswith(".py")]
+    errors = []
+    for source in sources:
+        try:
+            compile(source.read_text(encoding="utf-8"), str(source), "exec")
+        except SyntaxError as error:
+            errors.append(f"{_relative(root, str(source))}:{error.lineno} {error.msg}")
+    if not sources:
+        return ""
+    label = f"python syntax of {len(sources)} files"
+    return "\n".join([f"{label}: failed", *errors]) if errors else f"{label}: passed"
+
+
+def project_check(root: Path, files, run: Runner = subprocess.run) -> str:
+    """Run the fast check of the project after a write: `command: passed`, or `command: failed` and the first errors."""
+    found = _check_command(root)
+    if found is None:
+        return _python_check(root, files)
+    argv, env = found
+    label = " ".join([Path(argv[0]).name, *argv[1:]])
+    try:
+        done = run(argv, cwd=str(root), env=env, capture_output=True, text=True, timeout=_CHECK_TIMEOUT_S)
+    except (OSError, subprocess.TimeoutExpired) as error:
+        return f"{label}: not run ({type(error).__name__})"
+    kondo = argv[0] == "clj-kondo"
+    if done.returncode < (3 if kondo else 1):
+        return f"{label}: passed"
+    lines = [line for line in ((done.stdout or "") + (done.stderr or "")).splitlines() if line.strip()]
+    if kondo:
+        lines = [line for line in lines if ": error:" in line] or lines
+    return "\n".join([f"{label}: failed", *lines[:20]])
 
 
 def _unified_diff(root: Path, contents: dict) -> str:
@@ -490,9 +570,15 @@ Runner = Callable[..., subprocess.CompletedProcess]
 class GraphifyTools:
     """Build and query a graphify knowledge graph of the workspace code."""
 
-    def __init__(self, workspace_root: Callable[[], str] | None = None, runner: Runner | None = None):
+    def __init__(
+        self,
+        workspace_root: Callable[[], str] | None = None,
+        runner: Runner | None = None,
+        checker: Callable[[Path, list[str]], str] | None = None,
+    ):
         self._workspace_root = workspace_root or os.getcwd
         self._run = runner or subprocess.run
+        self._check = checker or project_check
 
     def _root(self, root: str) -> Path:
         path = Path(root).expanduser()
@@ -713,7 +799,9 @@ class GraphifyTools:
         files = tuple(sorted({ref.file for ref in found}))
         return ReferencesResult(_node(graph, node_id), len(found), files, found[:limit], len(found) > limit)
 
-    def rename(self, node: str, new_name: str, root: str = ".", apply: bool = False) -> RenameResult:
+    def rename(
+        self, node: str, new_name: str, root: str = ".", apply: bool = False, check: bool = True
+    ) -> RenameResult:
         """Rename a symbol at every site that resolves to it, across files.
 
         Works for functions, methods, classes and Clojure vars in every language with a
@@ -721,13 +809,15 @@ class GraphifyTools:
         blocks the rename: an invalid name, a file that already uses the new name, an override
         or trait method, or a common method name on receivers of unknown type. Without
         `apply`, nothing is written. Strings, comments and keywords stay; `text_mentions`
-        counts them. A written rename updates the graph.
+        counts them. A written rename updates the graph and, with `check`, runs the project
+        check: `go vet`, `tsc --noEmit`, `cargo check`, `clj-kondo` or a Python syntax check.
 
         Args:
             node: The symbol: id, label or a qualified name (`ns/name`, `module.name`, `Class.method`, `crate::m::name`) or `file::name`.
             new_name: The new name, without a namespace or class.
             root: Project directory, relative to the workspace root.
             apply: Write the files when the plan has no conflict.
+            check: After a write, run the project check and report it in `check`.
         """
         from graphify import refactor
 
@@ -737,10 +827,12 @@ class GraphifyTools:
         plan = refactor.plan_rename(_raw(graph), node_id, new_name, path)
         contents = refactor.rewrite(plan) if plan.edits else {}
         applied = False
+        checked = ""
         if apply and not plan.conflicts:
             refactor.apply_rename(plan)
             applied = True
             self._update(path)
+            checked = self._check(path, [_relative(path, f) for f in plan.files]) if check else ""
         return RenameResult(
             node=_node(graph, node_id),
             old=plan.old,
@@ -753,10 +845,11 @@ class GraphifyTools:
             text_mentions=sum(1 for m in plan.mentions if m.kind != "symbol"),
             diff=_unified_diff(path, contents),
             changes=_changed(path, {f: n for f, (_, n) in contents.items()}, [(e.file, e.line) for e in plan.edits]),
+            check=checked,
         )
 
     def add_parameter(
-        self, node: str, parameter: str, argument: str, root: str = ".", apply: bool = False
+        self, node: str, parameter: str, argument: str, root: str = ".", apply: bool = False, check: bool = True
     ) -> SignatureResult:
         """Add a parameter to a function or method and pass an argument at every call.
 
@@ -764,7 +857,8 @@ class GraphifyTools:
         function with the same name stays unchanged. The parameter goes last in the
         definition and the argument goes last in each call. With `apply=True`, the
         files are written unless a conflict blocks the change: a use that is not a call,
-        or a Python list that ends with `*args`, `**kwargs` or a default.
+        or a Python list that ends with `*args`, `**kwargs` or a default. A written change
+        runs the project check, as `rename` does.
 
         Args:
             node: The function or method: id, label, qualified name or `file::name`.
@@ -773,6 +867,7 @@ class GraphifyTools:
             argument: The value for each call, such as `"EUR"`.
             root: Project directory, relative to the workspace root.
             apply: Write the files when the plan has no conflict.
+            check: After a write, run the project check and report it in `check`.
         """
         from graphify import refactor
 
@@ -787,11 +882,13 @@ class GraphifyTools:
         plan = calls.plan(sites, parameter, argument, texts)
         new = calls.rewrite(plan, old)
         applied = False
+        checked = ""
         if apply and not plan.conflicts:
             for file, data in new.items():
                 (path / file).write_bytes(data)
             applied = True
             self._update(path)
+            checked = self._check(path, [_relative(path, str(file)) for file in new]) if check else ""
         return SignatureResult(
             node=_node(graph, node_id),
             parameter=parameter,
@@ -802,6 +899,7 @@ class GraphifyTools:
             conflicts=tuple(c.replace(f"{path}/", "") for c in plan.conflicts),
             diff=_unified_diff(path, {str(path / file): (old[file], data) for file, data in new.items()}),
             changes=_changed(path, new, [(i.file, i.line) for i in plan.inserts]),
+            check=checked,
         )
 
     def domain(

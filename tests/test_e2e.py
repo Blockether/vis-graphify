@@ -264,7 +264,11 @@ def test_real_rename_across_python_and_typescript(tmp_path):
     assert not preview.applied and not preview.conflicts
     assert (preview.mentions, preview.text_mentions) == ((), 1)
     assert "+def assist(x):" in preview.diff
-    assert tools.rename("helper()", "assist", apply=True).applied
+    renamed = tools.rename("helper()", "assist", apply=True)
+    assert renamed.applied and renamed.check == "python syntax of 2 files: passed"
+    assert "No other code spells helper." in str(renamed) and str(renamed).endswith(
+        "Check python syntax of 2 files: passed"
+    )
     assert "return assist(1)" in (tmp_path / "py/main.py").read_text(encoding="utf-8")
     done = tools.rename("formatName()", "displayName", apply=True)
     assert done.applied and done.files == ("web/main.ts", "web/util.ts")
@@ -288,7 +292,8 @@ def test_real_add_parameter_across_languages(tmp_path):
     assert not preview.applied and not preview.conflicts
     assert "+    return helper(1, scale=3) + helper(2, scale=3)" in preview.diff
     assert "helper(1)" in (tmp_path / "py/main.py").read_text(encoding="utf-8")  # a preview writes nothing
-    assert tools.add_parameter("helper()", "scale=1", "scale=3", apply=True).applied
+    added = tools.add_parameter("helper()", "scale=1", "scale=3", apply=True)
+    assert added.applied and added.check == "python syntax of 2 files: passed"
     assert "def helper(x, scale=1):" in (tmp_path / "py/util.py").read_text(encoding="utf-8")
     done = tools.add_parameter("formatName()", "upper: boolean", "true", apply=True)
     assert done.applied and done.files == ("web/main.ts", "web/util.ts")
