@@ -3161,7 +3161,7 @@ wheels = [
 
 [[package]]
 name = "vis-graphify"
-version = "0.3.2"
+version = "0.3.3"
 source = { virtual = "." }
 dependencies = [
     { name = "graphifyy" },

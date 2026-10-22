@@ -471,7 +471,7 @@ class GraphifyTools:
         """Show one node with what it calls and what calls or contains it.
 
         Args:
-            node: Node id, label (`run-tests()`), bare name or a qualified name (`ns/name`, `module.name`, `Class.method`, `crate::m::name`).
+            node: Node id, label (`run-tests()`), bare name or a qualified name (`ns/name`, `module.name`, `Class.method`, `crate::m::name`) or `file::name`.
             root: Project directory, relative to the workspace root.
             limit: Maximum count of edges in each direction.
         """
@@ -520,7 +520,7 @@ class GraphifyTools:
         """List the code that a change to a node can break: its callers, importers and users.
 
         Args:
-            node: Changed node: id, label, name or a qualified name (`ns/name`, `module.name`, `Class.method`, `crate::m::name`).
+            node: Changed node: id, label, name or a qualified name (`ns/name`, `module.name`, `Class.method`, `crate::m::name`) or `file::name`.
             root: Project directory, relative to the workspace root.
             depth: How many dependency steps to follow back.
             limit: Maximum count of returned dependents.
@@ -541,7 +541,7 @@ class GraphifyTools:
         The files come from the graph; run graphify.build() after you add files.
 
         Args:
-            node: The symbol: id, label or a qualified name (`ns/name`, `module.name`, `Class.method`, `crate::m::name`).
+            node: The symbol: id, label or a qualified name (`ns/name`, `module.name`, `Class.method`, `crate::m::name`) or `file::name`.
             root: Project directory, relative to the workspace root.
             limit: Maximum count of returned sites.
         """
@@ -566,7 +566,7 @@ class GraphifyTools:
         keywords stay; `text_mentions` counts them. A written rename updates the graph.
 
         Args:
-            node: The symbol: id, label or a qualified name (`ns/name`, `module.name`, `Class.method`, `crate::m::name`).
+            node: The symbol: id, label or a qualified name (`ns/name`, `module.name`, `Class.method`, `crate::m::name`) or `file::name`.
             new_name: The new name, without a namespace or class.
             root: Project directory, relative to the workspace root.
             apply: Write the files when the plan has no conflict.

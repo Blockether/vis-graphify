@@ -34,7 +34,7 @@ class AmbiguousNode(ValueError):
         more = f"\n  … {len(candidates) - 10} more" if len(candidates) > 10 else ""
         super().__init__(
             f"{reference!r} matches {len(candidates)} nodes:\n{shown}{more}\n"
-            "Pass one node id, or a qualified name such as `pkg.Name` or `Class.method`."
+            "Pass one node id, a qualified name such as `pkg.Name` or `Class.method`, or `file::name`."
         )
 
 
@@ -127,7 +127,9 @@ def resolve(graph: Graph, reference: str) -> str:
     Clojure protocol methods, labelled `.-method()`), a qualified name (`ns/name`,
     `module.name`, `Class.method` or `crate::module::name`), then a
     case-insensitive substring of the label. A node without a source file, such as
-    an external import, counts only when no defined node matches.
+    an external import, counts only when no defined node matches. A `file::name`
+    reference, such as `src/util.rs::checksum`, also accepts `:` or `#` and applies
+    the rules to the nodes of files whose path ends with `file`.
 
     Raises:
         NodeNotFound: No node matches.
@@ -136,6 +138,15 @@ def resolve(graph: Graph, reference: str) -> str:
     reference = reference.strip()
     if reference in graph.nodes:
         return reference
+    scope = _IN_FILE.match(reference)
+    where = scope["file"].removeprefix("./") if scope else None
+    if scope:
+        reference = scope["name"]
+
+    def located(node: dict) -> bool:
+        file = str(node.get("source_file") or "")
+        return where is None or file == where or file.endswith("/" + where)
+
     bare = _bare(reference)
     lowered = bare.lower()
     rules = (
@@ -146,7 +157,7 @@ def resolve(graph: Graph, reference: str) -> str:
         lambda node: lowered in str(node.get("label", "")).lower(),
     )
     for rule in rules:
-        found = sorted(node_id for node_id, node in graph.nodes.items() if rule(node))
+        found = sorted(node_id for node_id, node in graph.nodes.items() if located(node) and rule(node))
         # A node without a source file, such as an external import, loses to a defined node.
         found = [node_id for node_id in found if graph.nodes[node_id].get("source_file")] or found
         if len(found) == 1:
@@ -172,6 +183,7 @@ def _metadata_name(node: dict) -> str | None:
 
 
 _QUALIFIED = re.compile(r"^(.+)(?:::|[/.])([^/.:]+)$")
+_IN_FILE = re.compile(r"^(?P<file>[^\s:#]+\.[A-Za-z0-9]+)(?:::|:|#)(?P<name>\S+)$")
 
 
 def _qualifies(graph: Graph, node: dict, qualified: str) -> bool:

@@ -28,6 +28,9 @@ def test_load_without_graph_raises(tmp_path):
         ("app.core/run", "src_app_core_run"),
         ("app.web/run", "src_app_web_run"),
         ("CONNE", "src_app_db_connect"),
+        ("src/app/web.clj::run", "src_app_web_run"),
+        ("app/core.clj:run()", "src_app_core_run"),
+        ("web.clj#run", "src_app_web_run"),
     ],
 )
 def test_resolve(project, reference, expected):

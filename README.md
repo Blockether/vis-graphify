@@ -46,7 +46,8 @@ The agent uses these tools in its Python sandbox:
 | `graphify.domain(root=".")` | The domain model: services, commands, queries, events, links, schemas and findings. Writes `DOMAIN.md`. |
 
 You can name a node by its id, its label (`run()`), its bare name (`run`) or a qualified name
-(`my.ns/run`, `orders.Order`, `Ledger.post` or `crate::util::sum`). If a name matches more than one
+(`my.ns/run`, `orders.Order`, `Ledger.post` or `crate::util::sum`), or by its file and name
+(`src/util.rs::checksum`). If a name matches more than one
 node, the error lists each candidate id with its file and line.
 
 `graphify.build()` writes `graphify-out/.gitignore`, so git and `grep` skip the graph files.

@@ -7,7 +7,7 @@ import blockether.vis.extension as vis
 from vis_graphify import presentation
 from vis_graphify.tools import GraphifyTools, ImpactResult, ReferencesResult, SearchResult
 
-VERSION = "0.3.2"
+VERSION = "0.3.3"
 
 _Tag = Literal["observation", "mutation"]
 
@@ -61,7 +61,7 @@ PROMPT = """graphify surface active: a code knowledge graph (tree-sitter AST, no
   graphify.domain(root=".", plugins=None)     commands, queries, events, flows and Malli schemas -> DOMAIN.md
 references() and rename() work in every language with a tree-sitter grammar: Python, JavaScript, TypeScript, Go, Rust, Java, Clojure and more.
 Call graphify.build() once before the first query, and again after edits that you make without rename(); it re-extracts only changed files.
-Name a node by id, label (`run-tests()`), bare name or qualified name (`ns/name`, `pkg.Name`, `Class.method`, `crate::mod::name`). An ambiguous name raises an error that lists each candidate id with its location.
+Name a node by id, label (`run-tests()`), bare name or qualified name (`ns/name`, `pkg.Name`, `Class.method`, `crate::mod::name`) or file and name (`src/util.rs::checksum`). An ambiguous name raises an error that lists each candidate id with its location.
 To find callers, uses or the impact of a change, use graphify.references() or graphify.affected(), not grep: they skip strings, comments and same-named symbols.
 To rename a symbol, use graphify.rename(), not hand edits: print the preview, check its conflicts, then call it with apply=True. It updates the graph.
 print(result) gives a short summary; read a field, such as `edits` or `diff`, only when you need its details.
