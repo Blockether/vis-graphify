@@ -8,7 +8,7 @@ from vis_graphify import presentation
 from vis_graphify.kb import KBSearchResult
 from vis_graphify.tools import GraphifyTools, HubsResult, ImpactResult, ReferencesResult, SearchResult
 
-VERSION = "0.10.0"
+VERSION = "0.11.0"
 
 _Tag = Literal["observation", "mutation"]
 
@@ -172,5 +172,6 @@ vis.register_extension(
             )
         ],
         prompt=PROMPT,
+        env=["GRAPHIFY_KB_URL", "GRAPHIFY_KB_TOKEN"],
     )
 )

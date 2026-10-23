@@ -170,6 +170,7 @@ def test_connect_refuses_a_wrong_token_without_showing_it(hosted, project, monke
     with pytest.raises(kbc.KBRequestError, match="refused the token[.]") as error:
         tools.kb_connect(hosted, token=wrong)
     assert error.value.status == 401 and wrong not in str(error.value)
+    monkeypatch.setenv("GRAPHIFY_KB_URL", hosted)
     monkeypatch.setenv("GRAPHIFY_KB_TOKEN", wrong)
     with pytest.raises(kbc.KBRequestError, match="refused the token in GRAPHIFY_KB_TOKEN"):
         tools.kb_connect(hosted)
@@ -201,6 +202,29 @@ def test_connect_reads_a_secret_handle_through_the_host(hosted, project):
     tools = GraphifyTools(workspace_root=lambda: str(project), kb_secret=lambda text: vault.get(text, text))
     assert tools.kb_connect(hosted, token="handle:1").url == hosted
     assert tools.kb_connect(hosted, token=f" {TOKEN} ").url == hosted
+
+
+def test_environment_token_goes_only_to_the_configured_server(hosted, project, monkeypatch):
+    other = _start(project, token=TOKEN)
+    try:
+        monkeypatch.setenv("GRAPHIFY_KB_URL", hosted + "/")
+        monkeypatch.setenv("GRAPHIFY_KB_TOKEN", TOKEN)
+        tools = GraphifyTools(workspace_root=lambda: str(project))
+        # The configured server and token serve the calls without kb_connect, and kb_connect() checks them.
+        assert tools.kb_search("query").hits
+        assert tools.kb_connect().url == hosted
+        # A url that a call names never gets the token, also when its server would take it.
+        with pytest.raises(kbc.KBRequestError, match="kb_connect") as error:
+            tools.kb_search("query", url=other.url)
+        assert error.value.status == 401
+        with pytest.raises(kbc.KBRequestError, match=f"GRAPHIFY_KB_TOKEN goes only to {hosted}[.] Give token="):
+            tools.kb_connect(other.url)
+        monkeypatch.setenv("GRAPHIFY_KB_URL", "ftp://kb.example.com")
+        with pytest.raises(ValueError, match="GRAPHIFY_KB_URL: ftp://kb.example.com is not an http"):
+            GraphifyTools(workspace_root=lambda: str(project)).kb_search("query")
+    finally:
+        other.shutdown()
+        other.server_close()
 
 
 def _redirect_server(target):
@@ -265,6 +289,7 @@ def test_normalize_url():
     assert kbc.normalize_url("127.0.0.1:7878") == "http://127.0.0.1:7878"
     assert kbc.normalize_url("localhost:7878") == "http://localhost:7878"
     assert kbc.normalize_url("[::1]:7878") == "http://[::1]:7878"
+    assert kbc.normalize_url("https://KB.Example.com/Team/") == "https://kb.example.com/Team"
     for bad in ("", "ftp://kb.example.com", "https://"):
         with pytest.raises(ValueError):
             kbc.normalize_url(bad)
@@ -383,6 +408,30 @@ def test_serve_starts_graphify_then_reuses_and_stops(project):
     assert "Open the URL" not in str(stopped)
     with pytest.raises(RuntimeError, match="did not start"):
         tools.kb_stop(url=stopped.url)
+
+
+def test_serve_gives_its_server_the_environment_token(project, monkeypatch):
+    port = _free_port()
+    tokens = []
+    monkeypatch.setenv("GRAPHIFY_KB_URL", "https://kb.example.com")
+    monkeypatch.setenv("GRAPHIFY_KB_TOKEN", TOKEN)
+
+    def spawn(argv, **kwargs):
+        tokens.append(kwargs["env"].get("GRAPHIFY_KB_TOKEN"))
+        return FakeProcess(_start(project, port=port, token=TOKEN))
+
+    tools = GraphifyTools(workspace_root=lambda: str(project), spawn=spawn)
+    # The server reads the token from its environment, and the later calls send it there.
+    assert tools.kb_serve(port=port).started and tokens == [TOKEN]
+    assert tools.kb_search("connect").hits
+    assert not tools.kb_serve(port=port).started and len(tokens) == 1
+    tools.kb_stop()
+
+
+def test_serve_refuses_an_address_of_another_machine(project):
+    tools = GraphifyTools(workspace_root=lambda: str(project), spawn=lambda *a, **k: pytest.fail("no spawn"))
+    with pytest.raises(ValueError, match="192.0.2.1 is not one of its addresses. Use kb_connect"):
+        tools.kb_serve(host="192.0.2.1")
 
 
 def test_serve_reports_a_crashed_server(project):

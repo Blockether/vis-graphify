@@ -196,15 +196,44 @@ When the server needs a token, Vis shows a masked form in the TUI or the Compani
 the token with the server before it closes. The token stays in memory. It does not go into the
 conversation, the logs or a result.
 
-- To connect without the form, set `GRAPHIFY_KB_TOKEN` before Vis starts. You can also give
-  `token=`, but then the token shows in the conversation.
+- You can also give `token=`, but then the token shows in the conversation.
 - A URL without a scheme uses https, for example `kb.example.com`. A loopback address, such as
   `127.0.0.1:7878`, uses http.
 - If the server redirects to https on the same host, `kb_connect` uses the new address. It never
   follows a redirect to another host, so the token goes only to the server that you named.
-- To make a server the default without `kb_connect`, set `GRAPHIFY_KB_URL`.
 - `kb_ingest` sends the file content, so you can add files from your machine. `kb_publish` writes
   `kb.html` on the server machine.
+
+#### Connect without the form
+
+To connect without `kb_connect` and without the form, give the server and its token in two
+environment variables:
+
+- `GRAPHIFY_KB_URL` is the server address. Without it, graphify uses `http://127.0.0.1:7878`. The
+  `kb_*` calls use this server until a `kb_serve` or `kb_connect` call names another server.
+  `kb_connect()` without a URL checks it.
+- `GRAPHIFY_KB_TOKEN` is the token. graphify sends it only to that server and to the server of
+  `kb_serve`. Another server that a call names with `url` does not get it.
+
+Vis gives these variables to graphify when it loads the extension. Set them in one of these places:
+
+- The `environment:` block of `~/.vis/config.yml`. Use a reference, so that the file does not
+  hold the token:
+
+  ```yaml
+  environment:
+    GRAPHIFY_KB_URL: {literal: "https://kb.example.com"}
+    GRAPHIFY_KB_TOKEN: {keychain: graphify-kb}
+  ```
+
+  On macOS, save the token with `security add-generic-password -s graphify-kb -a "$USER" -w`. The
+  command asks for the token, so it does not go into the shell history.
+
+- The `.env` file of the project. Keep that file out of Git.
+- The environment of the process that starts the Vis gateway. A running gateway keeps its
+  environment, so restart the gateway after a change.
+
+After a change in a file, run `/reload`.
 
 To host the server, keep it on loopback and put a TLS reverse proxy in front of it:
 

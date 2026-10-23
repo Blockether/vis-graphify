@@ -236,7 +236,7 @@ def normalize_url(url: str) -> str:
         raise ValueError("Do not put the token in the URL. Give it with token=..., or let the form ask for it.")
     if parts.scheme.lower() not in ("http", "https") or not parts.hostname:
         raise ValueError(f"{url} is not an http or https URL.")
-    return urlunsplit((parts.scheme.lower(), parts.netloc, parts.path.rstrip("/"), "", ""))
+    return urlunsplit((parts.scheme.lower(), parts.netloc.lower(), parts.path.rstrip("/"), "", ""))
 
 
 def is_loopback_url(url: str) -> bool:

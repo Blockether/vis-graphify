@@ -14,6 +14,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -693,6 +694,22 @@ def _moved_base(base: str, error: kb.KBRequestError) -> str | None:
     return kb.normalize_url(error.location[: -len(suffix)])
 
 
+def _local_host(host: str) -> bool:
+    """True when this machine can listen on `host`: a loopback, unspecified or own address, or a name of one."""
+    try:
+        found = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+    except (OSError, UnicodeError):
+        return False
+    for family, kind, proto, _, address in found:
+        try:
+            with socket.socket(family, kind, proto) as probe:
+                probe.bind((address[0], 0, *address[2:]))
+        except OSError:
+            continue
+        return True
+    return False
+
+
 class GraphifyTools:
     """Build and query a graphify knowledge graph of the workspace code."""
 
@@ -1218,13 +1235,24 @@ class GraphifyTools:
             truncated=len(raw) > limit,
         )
 
-    def _kb(self, url: str | None, timeout_s: float = 60.0) -> kb.KBClient:
-        """A client for `url`, else the server of kb_serve or kb_connect, else `$GRAPHIFY_KB_URL`, else the default.
+    def _kb_configured(self) -> tuple[str, str | None]:
+        """The configured server, `$GRAPHIFY_KB_URL` or else the default, and its token `$GRAPHIFY_KB_TOKEN`."""
+        text = os.environ.get("GRAPHIFY_KB_URL", "").strip()
+        try:
+            url = kb.normalize_url(text) if text else kb.DEFAULT_URL
+        except ValueError as error:
+            raise ValueError(f"GRAPHIFY_KB_URL: {error}") from None
+        return url, os.environ.get("GRAPHIFY_KB_TOKEN", "").strip() or None
 
-        The token is the one that kb_connect checked for that server, else `$GRAPHIFY_KB_TOKEN`.
+    def _kb(self, url: str | None, timeout_s: float = 60.0) -> kb.KBClient:
+        """A client for `url`, else the server of kb_serve or kb_connect, else the configured server.
+
+        The token is the one that kb_serve or kb_connect has for that server. The configured token
+        goes only to the configured server, so a `url` that a call names never gets it.
         """
-        target = kb.normalize_url(url or self._kb_url or os.environ.get("GRAPHIFY_KB_URL") or kb.DEFAULT_URL)
-        token = self._kb_tokens.get(target) or os.environ.get("GRAPHIFY_KB_TOKEN") or None
+        configured, configured_token = self._kb_configured()
+        target = kb.normalize_url(url or self._kb_url or configured)
+        token = self._kb_tokens.get(target) or (configured_token if target == configured else None)
         return kb.KBClient(url=target, token=token, actor=self._kb_actor, timeout_s=timeout_s)
 
     @staticmethod
@@ -1250,16 +1278,25 @@ class GraphifyTools:
         Args:
             root: Project directory, relative to the workspace root.
             port: TCP port of the server.
-            host: Interface to bind. Off loopback, the server needs `$GRAPHIFY_KB_TOKEN` with at least 16 characters.
+            host: Address of this machine to bind. Off loopback, the server needs `$GRAPHIFY_KB_TOKEN` with at
+                least 16 characters. The server and the later kb_* calls use that token.
             read_only: Refuse all writes.
             timeout_s: Stop waiting for the server after this many seconds.
         """
+        if not _local_host(host):
+            raise ValueError(
+                f"kb_serve starts a server on this machine, and {host} is not one of its addresses. "
+                "Use kb_connect for a server elsewhere."
+            )
         path = self._root(root)
         graph_file = g.graph_path(path)
         if not graph_file.is_file():
             self._update(path)
-        url = f"http://{f'[{host}]' if ':' in host else host}:{port}"
+        url = kb.normalize_url(f"http://{f'[{host}]' if ':' in host else host}:{port}")
+        # The server reads $GRAPHIFY_KB_TOKEN from its environment, so it takes that token.
+        token = os.environ.get("GRAPHIFY_KB_TOKEN", "").strip() or None
         client = self._kb(url)
+        client.token = token or client.token
         running = self._kb_probe(client)
         if running:
             health, stats = running
@@ -1267,6 +1304,8 @@ class GraphifyTools:
             if served != graph_file.resolve():
                 raise RuntimeError(f"Port {port} already serves {served}. Choose another port.")
             self._kb_url = url
+            if token:
+                self._kb_tokens[url] = token
             process = self._kb_servers.get(url)
             return kb.server(health, stats, url, started=False, pid=process.pid if process else None)
         out = graph_file.parent
@@ -1296,6 +1335,8 @@ class GraphifyTools:
             time.sleep(0.2)
         self._kb_servers[url] = process
         self._kb_url = url
+        if token:
+            self._kb_tokens[url] = token
         return kb.server(*running, url, started=True, pid=process.pid, log=str(log))
 
     def kb_stop(self, url: str | None = None) -> kb.KBServer:
@@ -1320,7 +1361,7 @@ class GraphifyTools:
         health, stats = running or ({}, {})
         return dataclasses.replace(kb.server(health, stats, client.url, started=False, pid=process.pid), stopped=True)
 
-    def kb_connect(self, url: str, token: str | None = None, timeout_s: float = 30.0) -> kb.KBServer:
+    def kb_connect(self, url: str | None = None, token: str | None = None, timeout_s: float = 30.0) -> kb.KBServer:
         """Use a knowledge base server that runs elsewhere, such as a hosted `graphify kb serve`.
 
         Checks that the server answers and takes the token. Then the other kb_*
@@ -1330,12 +1371,16 @@ class GraphifyTools:
 
         Args:
             url: Server address, such as `https://kb.example.com`. Without a scheme, https is used,
-                or http for this machine.
+                or http for this machine. None uses `$GRAPHIFY_KB_URL`.
             token: The server token (its password), or a secret handle that the host can read. None uses
-                `$GRAPHIFY_KB_TOKEN`, else the form. Prefer the form: a token in the call shows in the conversation.
+                `$GRAPHIFY_KB_TOKEN` for the server in `$GRAPHIFY_KB_URL`, else the form. Prefer the form:
+                a token in the call shows in the conversation.
             timeout_s: Stop waiting for each answer after this many seconds.
         """
-        base = kb.normalize_url(url)
+        configured, configured_token = self._kb_configured()
+        base = kb.normalize_url(url) if url else configured
+        # The configured token goes only to the configured server, also after its move to https.
+        fallback = configured_token if base == configured else None
         given = self._kb_given(token)
         client = kb.KBClient(url=base, actor=self._kb_actor, timeout_s=timeout_s)
         try:
@@ -1346,7 +1391,7 @@ class GraphifyTools:
                 raise
             base = client.url = moved
             health = client.request("GET", "/api/health")
-        client.token = given or os.environ.get("GRAPHIFY_KB_TOKEN") or None
+        client.token = given or fallback
         try:
             stats = client.request("GET", "/api/stats")
         except kb.KBRequestError as error:
@@ -1354,11 +1399,17 @@ class GraphifyTools:
                 raise
             if given:
                 raise kb.KBRequestError(f"The server at {base} refused the token.", 401) from None
-            refused = "refused the token in GRAPHIFY_KB_TOKEN" if client.token else "needs a token"
+            if client.token:
+                refused = "refused the token in GRAPHIFY_KB_TOKEN"
+            elif configured_token:
+                refused = f"needs a token. GRAPHIFY_KB_TOKEN goes only to {configured}"
+            else:
+                refused = "needs a token"
             client.token = self._kb_ask(base, client)
             if not client.token:
                 raise kb.KBRequestError(
-                    f"The server at {base} {refused}. Give token=..., or set GRAPHIFY_KB_TOKEN.", 401
+                    f"The server at {base} {refused}. Give token=..., or set GRAPHIFY_KB_URL and GRAPHIFY_KB_TOKEN.",
+                    401,
                 ) from None
             stats = client.request("GET", "/api/stats")
         self._kb_url = base
