@@ -1037,8 +1037,9 @@ class GraphifyTools:
     def move(self, node: str, to: str, root: str = ".", apply: bool = False, check: bool = True) -> MoveResult:
         """Move one top-level definition to another file, which can be new, and fix every use.
 
-        Works for Python, JavaScript, TypeScript, Go, Rust and Clojure. Each import, require
-        and qualified use follows the definition, and the definition takes the imports that
+        Works for most graphify languages: Clojure, Python, JavaScript, TypeScript, Go, Rust,
+        the JVM and .NET languages, PHP, Swift, C and C++, Ruby, Erlang, OCaml, Pascal and more.
+        Each import, require and qualified use follows the definition, and the definition takes the imports that
         it needs. Rust also moves `impl` blocks of a moved type and widens private items to
         `pub(crate)` when the new module needs them. With `apply=True`, the files are written unless a conflict blocks the move,
         such as a name that the target file already defines or an import cycle. A written
@@ -1069,8 +1070,8 @@ class GraphifyTools:
     ) -> MoveResult:
         """Move or rename a source file and rename its module or namespace at every use.
 
-        Works for Python, JavaScript, TypeScript, Go, Rust and Clojure. Imports, requires,
-        `mod` declarations and qualified uses follow the file. For Clojure, the `ns` form
+        Works for the same languages as `move`. Imports, requires, `mod` declarations,
+        qualified uses and paths in build files follow the file. For Clojure, the `ns` form
         changes, and with `tests` the test namespace `x-test` of namespace `x` moves along.
         With `apply=True`, the files are written unless a conflict blocks the move, such as
         a target file that exists. A written move updates the graph and, with `check`,

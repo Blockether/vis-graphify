@@ -105,7 +105,11 @@ Ask in chat, for example "move `slugify` from `app.util` to a new file `app/text
 calls `graphify.move("app/util.py::slugify", "app/text.py", apply=True)`. To move a whole file, the
 agent calls `graphify.move_file("src/app/util.clj", "src/app/text/core.clj", apply=True)`.
 
-- The move works for Python, JavaScript, TypeScript, Go, Rust and Clojure.
+- The move works for Clojure, Python, JavaScript, TypeScript, Go and Rust. It also works for Java,
+  Kotlin, Scala, Groovy, C#, VB.NET, PHP, Swift, Elixir, Fortran, Erlang, OCaml, Pascal and Apex.
+  The languages that load files by path work too: C, C++, Objective-C, Ruby, shell, PowerShell,
+  Julia, Verilog, Lua, Zig, R, SQL, Common Lisp, Robot Framework, COBOL, Dart, Solidity, Terraform
+  and others.
 - Every import, require, `mod` declaration and qualified use follows the code.
 - The moved definition takes the imports that it needs.
 - For Clojure, `move_file` changes the `ns` form. It also moves the test namespace `x-test` of

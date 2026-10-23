@@ -1,13 +1,13 @@
 [project]
 name = "vis-graphify"
-version = "0.6.0"
+version = "0.7.0"
 description = "Code knowledge graphs for Vis with graphify: build, search, explain, paths, hubs, change impact, exact references, safe renames and moves of definitions and files, and domain flows."
 keywords = ["graph", "code"]
 requires-python = ">=3.12"
 license = "Apache-2.0"
 dependencies = [
   "vis-agent>=0.2.45",
-  "graphifyy @ git+https://github.com/Blockether/graphify@v0.9.93-blockether.9",
+  "graphifyy @ git+https://github.com/Blockether/graphify@v0.9.93-blockether.10",
   # Native Leiden: graphify clusters with it instead of networkx Louvain, about twice as fast.
   "graspologic-native>=1.3.1,<2",
 ]
