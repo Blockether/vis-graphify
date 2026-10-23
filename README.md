@@ -26,6 +26,8 @@ namespaces, vars, `:require` aliases, cross-file calls, protocols, records and C
   [Knowledge base](#knowledge-base).
 - Your team runs a knowledge base server, and you want the agent to read and edit it: use
   `graphify.kb_connect`. See [Use a hosted knowledge base](#use-a-hosted-knowledge-base).
+- You want every session to use that server without a question for the token: set two environment
+  variables. See [Connect without the form](#connect-without-the-form).
 
 The graph comes from tree-sitter syntax trees. A build makes no LLM call and sends no code anywhere.
 
@@ -178,7 +180,8 @@ print(graphify.kb_publish())                       # static graphify-out/kb.html
 
 A batch in `kb_write` is one change: if one operation fails, the server applies none of them. Read
 with `kb_search` and `kb_node`. The other `kb_*` calls use the server of the latest `kb_serve` or
-`kb_connect`. To use another server in one call, give `url`. `kb_stop()` stops a server that
+`kb_connect`, else the [configured server](#connect-without-the-form). To use another server in one
+call, give `url`. `kb_stop()` stops a server that
 `kb_serve` started. The [knowledge base guide](https://github.com/Blockether/graphify/blob/v8/docs/kb.md)
 describes the HTTP API and the ontology.
 
@@ -194,7 +197,8 @@ print(graphify.kb_search("billing"))
 
 When the server needs a token, Vis shows a masked form in the TUI or the Companion. The form checks
 the token with the server before it closes. The token stays in memory. It does not go into the
-conversation, the logs or a result.
+conversation, the logs or a result. A new session asks again. To connect without the form, see
+[Connect without the form](#connect-without-the-form).
 
 - You can also give `token=`, but then the token shows in the conversation.
 - A URL without a scheme uses https, for example `kb.example.com`. A loopback address, such as
@@ -211,14 +215,16 @@ environment variables:
 
 - `GRAPHIFY_KB_URL` is the server address. Without it, graphify uses `http://127.0.0.1:7878`. The
   `kb_*` calls use this server until a `kb_serve` or `kb_connect` call names another server.
-  `kb_connect()` without a URL checks it.
-- `GRAPHIFY_KB_TOKEN` is the token. graphify sends it only to that server and to the server of
-  `kb_serve`. Another server that a call names with `url` does not get it.
+  `kb_connect()` without a URL checks it. The agent sees this address, but never the token.
+- `GRAPHIFY_KB_TOKEN` is the token. graphify sends it only to that server. Another server that a
+  call names with `url` does not get it.
+- `kb_serve` also gives the token to the server that it starts. That server then needs the token,
+  and its admin UI asks for it in a sign-in form.
 
 Vis gives these variables to graphify when it loads the extension. Set them in one of these places:
 
-- The `environment:` block of `~/.vis/config.yml`. Use a reference, so that the file does not
-  hold the token:
+- The `environment:` block of `~/.vis/config.yml`, for all your projects, or of the project's
+  `vis.yml`, for that project only. Use a reference, so that the file does not hold the token:
 
   ```yaml
   environment:
@@ -227,13 +233,21 @@ Vis gives these variables to graphify when it loads the extension. Set them in o
   ```
 
   On macOS, save the token with `security add-generic-password -s graphify-kb -a "$USER" -w`. The
-  command asks for the token, so it does not go into the shell history.
+  command asks for the token, so it does not go into the shell history. A team can commit these
+  lines in the project's `vis.yml`. Each person then saves their own token under the same name.
 
 - The `.env` file of the project. Keep that file out of Git.
 - The environment of the process that starts the Vis gateway. A running gateway keeps its
   environment, so restart the gateway after a change.
 
 After a change in a file, run `/reload`.
+
+The files of a project win over your own configuration: its `vis.yml` over `~/.vis/config.yml`, and
+its `.env` over the process environment. So a project can point `GRAPHIFY_KB_URL` at another
+server, and graphify then sends your token there. Before you open a project that you did not
+write, check that it does not set `GRAPHIFY_KB_URL`.
+
+#### Host the server
 
 To host the server, keep it on loopback and put a TLS reverse proxy in front of it:
 

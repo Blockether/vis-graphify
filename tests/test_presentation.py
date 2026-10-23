@@ -91,6 +91,21 @@ def _entry(monkeypatch):
     return module, registered
 
 
+def test_prompt_names_the_configured_knowledge_base_server(monkeypatch):
+    module, registered = _entry(monkeypatch)
+    (extension,) = registered
+    monkeypatch.delenv("GRAPHIFY_KB_URL", raising=False)
+    assert extension.prompt({}) == module.PROMPT
+    monkeypatch.setenv("GRAPHIFY_KB_URL", "KB.example.com/")
+    assert extension.prompt({}).endswith(
+        "The configured server is https://kb.example.com: the kb_* calls use it without kb_connect,"
+        " until kb_serve or kb_connect names another server."
+    )
+    # An invalid address adds nothing: the kb_* calls report it.
+    monkeypatch.setenv("GRAPHIFY_KB_URL", "ftp://kb.example.com")
+    assert extension.prompt({}) == module.PROMPT
+
+
 def test_extension_registers_every_tool_with_an_activity(monkeypatch):
     module, registered = _entry(monkeypatch)
     (extension,) = registered

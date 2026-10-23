@@ -1,14 +1,15 @@
 """Vis entrypoint. The tools themselves live in vis_graphify."""
 
+import os
 from typing import Literal
 
 import blockether.vis.extension as vis
 
 from vis_graphify import presentation
-from vis_graphify.kb import KBSearchResult
+from vis_graphify.kb import KBSearchResult, normalize_url
 from vis_graphify.tools import GraphifyTools, HubsResult, ImpactResult, ReferencesResult, SearchResult
 
-VERSION = "0.11.0"
+VERSION = "0.11.1"
 
 _Tag = Literal["observation", "mutation"]
 
@@ -133,6 +134,15 @@ Knowledge base (ontology, documents, undoable edits, admin UI in the browser), s
   graphify.kb_ingest("docs/spec.pdf", mode="text"|"llm") · kb_undo() · kb_publish() (static kb.html)"""
 
 
+def _prompt(env) -> str:
+    """The prompt, with the configured knowledge base server when `$GRAPHIFY_KB_URL` names a valid one."""
+    try:
+        url = normalize_url(os.environ.get("GRAPHIFY_KB_URL", ""))
+    except ValueError:
+        return PROMPT
+    return f"{PROMPT}\n  The configured server is {url}: the kb_* calls use it without kb_connect, until kb_serve or kb_connect names another server."
+
+
 def _ask_kb_token(url: str, check) -> str | None:
     """Ask the person for the token of a knowledge base server in a masked form."""
     answer = vis.ask(
@@ -171,7 +181,7 @@ vis.register_extension(
                 name="graphify",
             )
         ],
-        prompt=PROMPT,
+        prompt=_prompt,
         env=["GRAPHIFY_KB_URL", "GRAPHIFY_KB_TOKEN"],
     )
 )

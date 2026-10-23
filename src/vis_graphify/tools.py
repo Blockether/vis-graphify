@@ -1448,7 +1448,8 @@ class GraphifyTools:
 
         Args:
             query: Plain words, not a regex.
-            url: Server URL. None uses the server of kb_serve.
+            url: Server URL. None uses the server of the latest kb_serve or kb_connect, else the configured
+                server: `$GRAPHIFY_KB_URL` or `http://127.0.0.1:7878`.
             limit: Maximum count of matches.
             cls: Return only nodes of this ontology class or its subclasses, such as `concept` or `code`.
         """
@@ -1460,7 +1461,8 @@ class GraphifyTools:
 
         Args:
             node: Node id, or an exact label when no node has that id.
-            url: Server URL. None uses the server of kb_serve.
+            url: Server URL. None uses the server of the latest kb_serve or kb_connect, else the configured
+                server: `$GRAPHIFY_KB_URL` or `http://127.0.0.1:7878`.
             limit: Maximum count of edges in each direction.
         """
         client = self._kb(url)
@@ -1488,7 +1490,8 @@ class GraphifyTools:
 
         Args:
             ops: The operations, in order. At most 10000.
-            url: Server URL. None uses the server of kb_serve.
+            url: Server URL. None uses the server of the latest kb_serve or kb_connect, else the configured
+                server: `$GRAPHIFY_KB_URL` or `http://127.0.0.1:7878`.
         """
         if not isinstance(ops, (list, tuple)) or not ops:
             raise ValueError("ops must be a non-empty list of operation dicts.")
@@ -1517,7 +1520,8 @@ class GraphifyTools:
 
         Args:
             source: A file path relative to the workspace root, an http(s) URL, or the document name when `text` is set.
-            url: Server URL. None uses the server of kb_serve.
+            url: Server URL. None uses the server of the latest kb_serve or kb_connect, else the configured
+                server: `$GRAPHIFY_KB_URL` or `http://127.0.0.1:7878`.
             mode: `text` or `llm`.
             title: Document title. None uses the file name or the first heading.
             tags: Document tags.
@@ -1545,7 +1549,8 @@ class GraphifyTools:
         """Check the knowledge base against its ontology: missing properties, bad edge ends, orphans, cycles.
 
         Args:
-            url: Server URL. None uses the server of kb_serve.
+            url: Server URL. None uses the server of the latest kb_serve or kb_connect, else the configured
+                server: `$GRAPHIFY_KB_URL` or `http://127.0.0.1:7878`.
             limit: Maximum count of returned findings. The counts stay complete.
             info: Also return info findings, such as orphan nodes.
         """
@@ -1556,7 +1561,8 @@ class GraphifyTools:
         """Revert the latest change, or the change with history number `seq`.
 
         Args:
-            url: Server URL. None uses the server of kb_serve.
+            url: Server URL. None uses the server of the latest kb_serve or kb_connect, else the configured
+                server: `$GRAPHIFY_KB_URL` or `http://127.0.0.1:7878`.
             seq: History number of the change. None reverts the latest change that is not reverted yet.
         """
         answer = self._kb(url).request("POST", "/api/undo", {"seq": seq} if seq is not None else {})
@@ -1566,7 +1572,8 @@ class GraphifyTools:
         """Write a static HTML view of the knowledge base that opens without a server.
 
         Args:
-            url: Server URL. None uses the server of kb_serve.
+            url: Server URL. None uses the server of the latest kb_serve or kb_connect, else the configured
+                server: `$GRAPHIFY_KB_URL` or `http://127.0.0.1:7878`.
             path: An `.html` file name inside `graphify-out/`. None writes `graphify-out/kb.html`.
         """
         answer = self._kb(url).request("POST", "/api/publish", {"path": path} if path else {})
