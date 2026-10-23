@@ -78,12 +78,21 @@ def test_renderer_failure_and_start_show_arguments():
     assert render(phase="success", result=None) is None
 
 
-def test_extension_registers_every_tool_with_an_activity(monkeypatch):
+def _entry(monkeypatch):
+    """Load extension.py with a stub registration. The test end restores the unwrapped GraphifyTools methods."""
+    for name, value in list(vars(GraphifyTools).items()):
+        if not name.startswith("_"):
+            monkeypatch.setattr(GraphifyTools, name, value)
     registered = []
     monkeypatch.setattr(vis, "register_extension", registered.append)
     spec = importlib.util.spec_from_file_location("vis_graphify_entry", ROOT / "extension.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    return module, registered
+
+
+def test_extension_registers_every_tool_with_an_activity(monkeypatch):
+    module, registered = _entry(monkeypatch)
     (extension,) = registered
     assert extension.name == "vis-graphify" and extension.alias == "graphify"
     assert extension.version == module.VERSION
@@ -105,6 +114,7 @@ def test_extension_registers_every_tool_with_an_activity(monkeypatch):
             "domain",
             "kb_serve",
             "kb_stop",
+            "kb_connect",
             "kb_search",
             "kb_node",
             "kb_write",
@@ -117,6 +127,38 @@ def test_extension_registers_every_tool_with_an_activity(monkeypatch):
     for name in public:
         method = getattr(GraphifyTools, name)
         assert method.__doc__, name
+
+
+def test_extension_reads_the_kb_token_in_a_masked_form(monkeypatch):
+    module, _ = _entry(monkeypatch)
+    vault, forgotten, asked = {"vis-secret:1": "kb-token-0123456789"}, [], []
+    monkeypatch.setattr(vis, "reveal", vault.get)
+    monkeypatch.setattr(vis, "forget", forgotten.append)
+    assert module._kb_secret("kb-token-plain-0123") == "kb-token-plain-0123"
+    assert module._kb_secret("vis-secret:1") == "kb-token-0123456789"
+    with pytest.raises(ValueError, match="unknown or forgotten"):
+        module._kb_secret("vis-secret:2")
+
+    class Answer(dict):
+        def reveal(self, name):
+            return vault.get(self[name])
+
+    def ask(title, fields, **options):
+        asked.append(fields)
+        return Answer(token="vis-secret:1")
+
+    def check(text):
+        return None
+
+    monkeypatch.setattr(vis, "ask", ask)
+    assert module._ask_kb_token("https://kb.example.com", check) == "kb-token-0123456789"
+    ((field,),) = asked
+    assert (field["type"], field["is_required"], field["validate"]) == ("password", True, check)
+    # The plaintext leaves the vault as soon as the extension has read it.
+    assert forgotten == ["vis-secret:1"]
+    # A cancelled, timed-out or undeliverable form answers falsy.
+    monkeypatch.setattr(vis, "ask", lambda title, fields, **options: Answer())
+    assert module._ask_kb_token("https://kb.example.com", check) is None
 
 
 def test_versions_agree():

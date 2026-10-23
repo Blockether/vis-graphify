@@ -8,7 +8,7 @@ from vis_graphify import presentation
 from vis_graphify.kb import KBSearchResult
 from vis_graphify.tools import GraphifyTools, HubsResult, ImpactResult, ReferencesResult, SearchResult
 
-VERSION = "0.9.0"
+VERSION = "0.10.0"
 
 _Tag = Literal["observation", "mutation"]
 
@@ -94,6 +94,7 @@ _bind(
     show_start=True,
 )
 _bind("kb_stop", "Stop knowledge base", presentation.kb_stopped, ("url",), tag="mutation")
+_bind("kb_connect", "Connect knowledge base", presentation.kb_server, ("url",), show_start=True)
 _bind("kb_search", "Search knowledge base", presentation.kb_search, ("query", "url", "cls"))
 _bind("kb_node", "Read knowledge node", presentation.kb_node, ("node", "url"))
 _bind("kb_write", "Write knowledge base", presentation.kb_change("Write knowledge base"), ("url",), tag="mutation")
@@ -126,9 +127,37 @@ Name a node by `pkg.Name`, `Class.method`, `ns/name`, `crate::mod::name` or bare
 Also: graphify.explain(node) · shortest_path(a, b) · search(pattern) · hubs() · domain() (edd-core flows -> DOMAIN.md).
 Knowledge base (ontology, documents, undoable edits, admin UI in the browser), shared with people over HTTP:
   print(graphify.kb_serve())    start or reuse `graphify kb serve` for the project graph; give the user its URL
+  print(graphify.kb_connect("https://kb.example.com"))  use a hosted server; a masked form asks the person for its token, so never ask for it in chat
   graphify.kb_search(q) · kb_node(id) · kb_validate()   read nodes, documents and ontology findings
   graphify.kb_write([{"op": "add_node", "label": "Billing", "class": "concept"}, {"op": "add_edge", ...}])  one undoable change; doc("graphify.kb_write") lists the ops
   graphify.kb_ingest("docs/spec.pdf", mode="text"|"llm") · kb_undo() · kb_publish() (static kb.html)"""
+
+
+def _ask_kb_token(url: str, check) -> str | None:
+    """Ask the person for the token of a knowledge base server in a masked form."""
+    answer = vis.ask(
+        "Knowledge base token",
+        [vis.password("token", label="Token", description=f"The token of {url}.", is_required=True, validate=check)],
+        description="The token stays out of the conversation, the logs and the model.",
+        submit_label="Connect",
+    )
+    if not answer:
+        return None
+    try:
+        return answer.reveal("token")
+    finally:
+        vis.forget(answer["token"])
+
+
+def _kb_secret(token: str) -> str:
+    """The token itself, or the plaintext behind a `vis-secret:` handle of a masked form."""
+    if not token.startswith("vis-secret:"):
+        return token
+    value = vis.reveal(token)
+    if not value:
+        raise ValueError("The vis-secret: handle is unknown or forgotten. Ask for the token again.")
+    return value
+
 
 vis.register_extension(
     vis.Extension(
@@ -136,7 +165,12 @@ vis.register_extension(
         description="Code knowledge graphs for Vis with graphify: search, change impact, exact references, safe renames and moves, domain flows, and a knowledge base server with ontology, documents and undoable edits.",
         version=VERSION,
         alias="graphify",
-        symbols=[vis.Symbol(GraphifyTools(workspace_root=vis.workspace_root), name="graphify")],
+        symbols=[
+            vis.Symbol(
+                GraphifyTools(workspace_root=vis.workspace_root, kb_ask_token=_ask_kb_token, kb_secret=_kb_secret),
+                name="graphify",
+            )
+        ],
         prompt=PROMPT,
     )
 )

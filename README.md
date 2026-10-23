@@ -24,6 +24,8 @@ namespaces, vars, `:require` aliases, cross-file calls, protocols, records and C
 - You want to edit the graph together with an agent: add concepts and documents, check them against
   an ontology and see the result in the browser. Use `graphify.kb_serve`. See
   [Knowledge base](#knowledge-base).
+- Your team runs a knowledge base server, and you want the agent to read and edit it: use
+  `graphify.kb_connect`. See [Use a hosted knowledge base](#use-a-hosted-knowledge-base).
 
 The graph comes from tree-sitter syntax trees. A build makes no LLM call and sends no code anywhere.
 
@@ -175,12 +177,46 @@ print(graphify.kb_publish())                       # static graphify-out/kb.html
 ```
 
 A batch in `kb_write` is one change: if one operation fails, the server applies none of them. Read
-with `kb_search` and `kb_node`. The other `kb_*` calls use the started server. Give `url` to use
-another server, or set `GRAPHIFY_KB_URL`. Off loopback, the server needs a token of at
-least 16 characters in `GRAPHIFY_KB_TOKEN`, and the client sends the same variable.
-`kb_stop()` stops a server that `kb_serve` started. The
-[knowledge base guide](https://github.com/Blockether/graphify/blob/v8/docs/kb.md)
+with `kb_search` and `kb_node`. The other `kb_*` calls use the server of the latest `kb_serve` or
+`kb_connect`. To use another server in one call, give `url`. `kb_stop()` stops a server that
+`kb_serve` started. The [knowledge base guide](https://github.com/Blockether/graphify/blob/v8/docs/kb.md)
 describes the HTTP API and the ontology.
+
+### Use a hosted knowledge base
+
+If your team runs `graphify kb serve` on a server, connect to it once. The other `kb_*` calls then
+use that server and its token.
+
+```python
+print(graphify.kb_connect("https://kb.example.com"))
+print(graphify.kb_search("billing"))
+```
+
+When the server needs a token, Vis shows a masked form in the TUI or the Companion. The form checks
+the token with the server before it closes. The token stays in memory. It does not go into the
+conversation, the logs or a result.
+
+- To connect without the form, set `GRAPHIFY_KB_TOKEN` before Vis starts. You can also give
+  `token=`, but then the token shows in the conversation.
+- A URL without a scheme uses https, for example `kb.example.com`. A loopback address, such as
+  `127.0.0.1:7878`, uses http.
+- If the server redirects to https on the same host, `kb_connect` uses the new address. It never
+  follows a redirect to another host, so the token goes only to the server that you named.
+- To make a server the default without `kb_connect`, set `GRAPHIFY_KB_URL`.
+- `kb_ingest` sends the file content, so you can add files from your machine. `kb_publish` writes
+  `kb.html` on the server machine.
+
+To host the server, keep it on loopback and put a TLS reverse proxy in front of it:
+
+```bash
+export GRAPHIFY_KB_TOKEN="$(openssl rand -hex 24)"  # at least 16 characters; keep it in a secret store
+graphify kb serve graphify-out/graph.json --allow-host kb.example.com
+```
+
+- The server listens on `127.0.0.1:7878`. Point the proxy for `kb.example.com` at that address.
+- With a token, every API call except `/api/health` needs the token.
+- `--allow-host` names the public hostname. The server refuses requests for other host names.
+- The server reads the token from `GRAPHIFY_KB_TOKEN`, so the token does not show in the process list.
 
 ## Development
 

@@ -7,12 +7,13 @@ results. It does not import graphify.
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
 from typing import Annotated, Any
-from urllib.parse import quote, urlencode
+from urllib.parse import quote, urlencode, urljoin, urlsplit, urlunsplit
 
 DEFAULT_URL = "http://127.0.0.1:7878"
 """The address of `graphify kb serve` with its default port."""
@@ -27,9 +28,10 @@ ACTOR_HEADER = "X-Graphify-Actor"
 class KBRequestError(RuntimeError):
     """The knowledge base server refused a request or did not answer."""
 
-    def __init__(self, message: str, status: int = 0):
+    def __init__(self, message: str, status: int = 0, location: str = ""):
         super().__init__(message)
         self.status = status
+        self.location = location
 
 
 @dataclass(frozen=True)
@@ -56,9 +58,14 @@ class KBServer:
             )
         how = "Started" if self.started else "Using"
         mode = ", read-only" if self.read_only else ""
+        plain = (
+            " It uses http, so the token and the data travel unencrypted. Use https for a hosted server."
+            if self.url.startswith("http://") and not is_loopback_url(self.url)
+            else ""
+        )
         return (
             f"{how} knowledge base {self.url}{mode}: {self.nodes} nodes, {self.edges} edges, "
-            f"{self.documents} documents. Open the URL for the admin UI."
+            f"{self.documents} documents. Open the URL for the admin UI.{plain}"
         )
 
 
@@ -213,12 +220,52 @@ class KBPublishResult:
         return f"Published {self.path} ({self.bytes} bytes). It opens without a server."
 
 
+def normalize_url(url: str) -> str:
+    """The base URL of a server, without a trailing slash, query or fragment.
+
+    A URL without a scheme gets http for this machine, such as `127.0.0.1:7878`, else https.
+    Raises ValueError for another scheme, a missing host or a token inside the URL.
+    """
+    text = str(url or "").strip()
+    if not text:
+        raise ValueError("Give the URL of the knowledge base server, such as https://kb.example.com.")
+    if "://" not in text:
+        text = ("http://" if is_loopback_url("http://" + text) else "https://") + text
+    parts = urlsplit(text)
+    if parts.username or parts.password:
+        raise ValueError("Do not put the token in the URL. Give it with token=..., or let the form ask for it.")
+    if parts.scheme.lower() not in ("http", "https") or not parts.hostname:
+        raise ValueError(f"{url} is not an http or https URL.")
+    return urlunsplit((parts.scheme.lower(), parts.netloc, parts.path.rstrip("/"), "", ""))
+
+
+def is_loopback_url(url: str) -> bool:
+    """True for a server on this machine: localhost or a loopback address."""
+    host = (urlsplit(url).hostname or "").lower()
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Refuse redirects: urllib sends the token to the new address and turns a POST into a GET."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect)
+
+
 @dataclass
 class KBClient:
     """HTTP access to one knowledge base server."""
 
     url: str = DEFAULT_URL
-    token: str | None = None
+    token: str | None = field(default=None, repr=False)
     actor: str = "agent"
     timeout_s: float = 60.0
     _opener: Any = field(default=None, repr=False)
@@ -238,22 +285,38 @@ class KBClient:
             data = json.dumps(body).encode()
             headers["Content-Type"] = "application/json"
         request = urllib.request.Request(target, data=data, method=method, headers=headers)
-        opener = self._opener or urllib.request.urlopen
+        opener = self._opener or _OPENER.open
         try:
             with opener(request, timeout=self.timeout_s) as response:
                 raw = response.read()
         except urllib.error.HTTPError as error:
             raw = error.read()
+            if 300 <= error.code < 400:
+                location = urljoin(target, error.headers.get("Location") or "")
+                raise KBRequestError(
+                    f"{method} {path}: the server redirects to {location}. Connect with that address.",
+                    error.code,
+                    location,
+                ) from None
             try:
                 message = json.loads(raw or b"{}").get("error") or error.reason
             except (ValueError, AttributeError):
                 message = (raw or b"").decode(errors="replace")[:500] or error.reason
+            if error.code == 401:
+                message = f"{message}. Give the token with graphify.kb_connect(url)"
+            elif error.code == 403 and "Host header" in str(message):
+                message = f"{message}. Start the server with --allow-host {urlsplit(self.url).hostname}"
+            elif error.code == 429 and error.headers.get("Retry-After"):
+                message = f"{message} (after {error.headers.get('Retry-After')} s)"
             raise KBRequestError(f"{method} {path}: {error.code} {message}", error.code) from None
         except (urllib.error.URLError, OSError) as error:
             reason = getattr(error, "reason", error)
-            raise KBRequestError(
-                f"No knowledge base server answers at {self.url} ({reason}). Start one with graphify.kb_serve()."
-            ) from None
+            hint = (
+                "Start one with graphify.kb_serve()."
+                if is_loopback_url(self.url)
+                else "Check the URL, and that the server runs and this machine can reach it."
+            )
+            raise KBRequestError(f"No knowledge base server answers at {self.url} ({reason}). {hint}") from None
         try:
             answer = json.loads(raw or b"{}")
         except ValueError:

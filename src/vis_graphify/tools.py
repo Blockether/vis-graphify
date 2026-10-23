@@ -22,6 +22,7 @@ from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Callable
+from urllib.parse import urlsplit
 
 from vis_graphify import graph as g
 from vis_graphify import kb
@@ -678,6 +679,20 @@ def _others(graph: g.Graph, node_id: str, limit: int = 5) -> tuple[str, ...]:
 Runner = Callable[..., subprocess.CompletedProcess]
 
 
+def _moved_base(base: str, error: kb.KBRequestError) -> str | None:
+    """The new base URL when the health check redirects on the same host, such as http to https, else None.
+
+    A move to another host or from https to http stays an error: the token must not follow it.
+    """
+    suffix = "/api/health"
+    if not 300 <= error.status < 400 or not error.location.endswith(suffix):
+        return None
+    old, new = urlsplit(base), urlsplit(error.location)
+    if new.hostname != old.hostname or (old.scheme == "https" and new.scheme != "https"):
+        return None
+    return kb.normalize_url(error.location[: -len(suffix)])
+
+
 class GraphifyTools:
     """Build and query a graphify knowledge graph of the workspace code."""
 
@@ -688,6 +703,8 @@ class GraphifyTools:
         checker: Callable[[Path, list[str]], str] | None = None,
         spawn: Callable[..., subprocess.Popen] | None = None,
         kb_actor: str = "agent",
+        kb_ask_token: Callable[[str, Callable[[str], str | None]], str | None] | None = None,
+        kb_secret: Callable[[str], str] | None = None,
     ):
         self._workspace_root = workspace_root or os.getcwd
         self._run = runner or subprocess.run
@@ -696,6 +713,10 @@ class GraphifyTools:
         self._kb_actor = kb_actor
         self._kb_url: str | None = None
         self._kb_servers: dict[str, subprocess.Popen] = {}
+        # kb_connect: the masked token form, the reader of a host secret handle and the checked tokens by server URL.
+        self._kb_ask_token = kb_ask_token
+        self._kb_secret = kb_secret
+        self._kb_tokens: dict[str, str] = {}
 
     def _root(self, root: str) -> Path:
         path = Path(root).expanduser()
@@ -1198,11 +1219,13 @@ class GraphifyTools:
         )
 
     def _kb(self, url: str | None, timeout_s: float = 60.0) -> kb.KBClient:
-        """A client for `url`, else the server that kb_serve started, else `$GRAPHIFY_KB_URL`, else the default."""
-        target = url or self._kb_url or os.environ.get("GRAPHIFY_KB_URL") or kb.DEFAULT_URL
-        return kb.KBClient(
-            url=target, token=os.environ.get("GRAPHIFY_KB_TOKEN") or None, actor=self._kb_actor, timeout_s=timeout_s
-        )
+        """A client for `url`, else the server of kb_serve or kb_connect, else `$GRAPHIFY_KB_URL`, else the default.
+
+        The token is the one that kb_connect checked for that server, else `$GRAPHIFY_KB_TOKEN`.
+        """
+        target = kb.normalize_url(url or self._kb_url or os.environ.get("GRAPHIFY_KB_URL") or kb.DEFAULT_URL)
+        token = self._kb_tokens.get(target) or os.environ.get("GRAPHIFY_KB_TOKEN") or None
+        return kb.KBClient(url=target, token=token, actor=self._kb_actor, timeout_s=timeout_s)
 
     @staticmethod
     def _kb_probe(client: kb.KBClient) -> tuple[dict, dict] | None:
@@ -1296,6 +1319,76 @@ class GraphifyTools:
             self._kb_url = None
         health, stats = running or ({}, {})
         return dataclasses.replace(kb.server(health, stats, client.url, started=False, pid=process.pid), stopped=True)
+
+    def kb_connect(self, url: str, token: str | None = None, timeout_s: float = 30.0) -> kb.KBServer:
+        """Use a knowledge base server that runs elsewhere, such as a hosted `graphify kb serve`.
+
+        Checks that the server answers and takes the token. Then the other kb_*
+        methods use this server and token until the next kb_connect or kb_serve.
+        The token stays in memory and never shows in a result. When the server
+        needs a token and none is given, a masked form asks the person for it.
+
+        Args:
+            url: Server address, such as `https://kb.example.com`. Without a scheme, https is used,
+                or http for this machine.
+            token: The server token (its password), or a secret handle that the host can read. None uses
+                `$GRAPHIFY_KB_TOKEN`, else the form. Prefer the form: a token in the call shows in the conversation.
+            timeout_s: Stop waiting for each answer after this many seconds.
+        """
+        base = kb.normalize_url(url)
+        given = self._kb_given(token)
+        client = kb.KBClient(url=base, actor=self._kb_actor, timeout_s=timeout_s)
+        try:
+            health = client.request("GET", "/api/health")
+        except kb.KBRequestError as error:
+            moved = _moved_base(base, error)
+            if moved is None:
+                raise
+            base = client.url = moved
+            health = client.request("GET", "/api/health")
+        client.token = given or os.environ.get("GRAPHIFY_KB_TOKEN") or None
+        try:
+            stats = client.request("GET", "/api/stats")
+        except kb.KBRequestError as error:
+            if error.status != 401:
+                raise
+            if given:
+                raise kb.KBRequestError(f"The server at {base} refused the token.", 401) from None
+            refused = "refused the token in GRAPHIFY_KB_TOKEN" if client.token else "needs a token"
+            client.token = self._kb_ask(base, client)
+            if not client.token:
+                raise kb.KBRequestError(
+                    f"The server at {base} {refused}. Give token=..., or set GRAPHIFY_KB_TOKEN.", 401
+                ) from None
+            stats = client.request("GET", "/api/stats")
+        self._kb_url = base
+        if client.token:
+            self._kb_tokens[base] = client.token
+        else:
+            self._kb_tokens.pop(base, None)
+        return kb.server(health, stats, base, started=False)
+
+    def _kb_given(self, token: str | None) -> str | None:
+        """The token argument, after the host reads a secret handle in it. None for no token."""
+        text = str(token or "").strip()
+        if not text:
+            return None
+        return self._kb_secret(text).strip() if self._kb_secret else text
+
+    def _kb_ask(self, base: str, client: kb.KBClient) -> str | None:
+        """Ask the person for the token in a masked form. The form checks each try with the server."""
+        if self._kb_ask_token is None:
+            return None
+
+        def check(text: str) -> str | None:
+            try:
+                dataclasses.replace(client, token=text.strip()).request("GET", "/api/stats")
+            except kb.KBRequestError as error:
+                return "The server refused this token." if error.status == 401 else str(error)
+            return None
+
+        token = self._kb_ask_token(base, check)
+        return token.strip() if token else None
 
     def kb_search(
         self, query: str, url: str | None = None, limit: int = 20, cls: str | None = None

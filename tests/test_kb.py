@@ -129,6 +129,195 @@ def test_missing_server_names_kb_serve(project):
         tools.kb_search("x", url="http://127.0.0.1:9")
 
 
+TOKEN = "kb-token-for-the-tests-0123"
+
+
+@pytest.fixture
+def hosted(project, monkeypatch):
+    """A server that needs a token, as on a host. Each test gets a new server and a new login backoff."""
+    monkeypatch.delenv("GRAPHIFY_KB_TOKEN", raising=False)
+    monkeypatch.delenv("GRAPHIFY_KB_URL", raising=False)
+    server = _start(project, token=TOKEN)
+    yield server.url
+    server.shutdown()
+    server.server_close()
+
+
+def test_connect_with_a_token_serves_the_later_calls(hosted, project):
+    tools = GraphifyTools(workspace_root=lambda: str(project), kb_actor="tester")
+    with pytest.raises(kbc.KBRequestError, match="kb_connect") as error:
+        tools.kb_search("query", url=hosted)
+    assert error.value.status == 401
+    connected = tools.kb_connect(hosted + "/", token=TOKEN)
+    assert (connected.url, connected.started) == (hosted, False) and connected.nodes > 0
+    # The later calls need no url and no token.
+    assert tools.kb_search("query").hits[0].id == "src_app_db_query"
+    tools.kb_write([{"op": "add_node", "label": "Billing", "class": "concept"}])
+    assert tools.kb_node("kb:billing").label == "Billing"
+    tools.kb_undo()
+    with pytest.raises(kbc.KBRequestError, match="404"):
+        tools.kb_node("kb:billing")
+    shown = str(connected) + repr(connected) + repr(tools._kb(None)) + str(presentation.kb_server(connected))
+    assert TOKEN not in shown
+
+
+def test_connect_refuses_a_wrong_token_without_showing_it(hosted, project, monkeypatch):
+    tools = GraphifyTools(workspace_root=lambda: str(project))
+    with pytest.raises(kbc.KBRequestError, match="needs a token. Give token=") as error:
+        tools.kb_connect(hosted)
+    assert error.value.status == 401
+    wrong = "a-wrong-token-that-is-long"
+    with pytest.raises(kbc.KBRequestError, match="refused the token[.]") as error:
+        tools.kb_connect(hosted, token=wrong)
+    assert error.value.status == 401 and wrong not in str(error.value)
+    monkeypatch.setenv("GRAPHIFY_KB_TOKEN", wrong)
+    with pytest.raises(kbc.KBRequestError, match="refused the token in GRAPHIFY_KB_TOKEN"):
+        tools.kb_connect(hosted)
+    # A correct token passes also during the login backoff.
+    monkeypatch.setenv("GRAPHIFY_KB_TOKEN", TOKEN)
+    assert tools.kb_connect(hosted).url == hosted
+
+
+def test_connect_asks_in_a_masked_form_that_checks_each_try(hosted, project):
+    cancelled = GraphifyTools(workspace_root=lambda: str(project), kb_ask_token=lambda url, check: None)
+    with pytest.raises(kbc.KBRequestError, match="needs a token"):
+        cancelled.kb_connect(hosted)
+    asked = []
+
+    def ask(url, check):
+        asked.append(url)
+        # The form shows the message of a refused token and closes on the right one.
+        assert check("a-wrong-token-that-is-long") == "The server refused this token."
+        assert check(TOKEN) is None
+        return f" {TOKEN} "
+
+    tools = GraphifyTools(workspace_root=lambda: str(project), kb_ask_token=ask)
+    assert tools.kb_connect(hosted).url == hosted and asked == [hosted]
+    assert tools.kb_search("query").hits
+
+
+def test_connect_reads_a_secret_handle_through_the_host(hosted, project):
+    vault = {"handle:1": TOKEN}
+    tools = GraphifyTools(workspace_root=lambda: str(project), kb_secret=lambda text: vault.get(text, text))
+    assert tools.kb_connect(hosted, token="handle:1").url == hosted
+    assert tools.kb_connect(hosted, token=f" {TOKEN} ").url == hosted
+
+
+def _redirect_server(target):
+    """A server that answers every request with a 308 to `target` plus the request path."""
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    class Moved(BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(308)
+            self.send_header("Location", target + self.path)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        do_POST = do_GET
+
+        def log_message(self, *args):
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Moved)
+    threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True).start()
+    return server, f"http://127.0.0.1:{server.server_address[1]}"
+
+
+def test_connect_follows_a_redirect_only_on_the_same_host(hosted, project):
+    port = hosted.rsplit(":", 1)[1]
+    same, same_url = _redirect_server(hosted)
+    other, other_url = _redirect_server(f"http://localhost:{port}")
+    try:
+        tools = GraphifyTools(workspace_root=lambda: str(project))
+        assert tools.kb_connect(same_url, token=TOKEN).url == hosted
+        with pytest.raises(kbc.KBRequestError, match=f"redirects to http://localhost:{port}/api/health") as error:
+            tools.kb_connect(other_url, token=TOKEN)
+        assert error.value.status == 308
+        # A write never follows a redirect: urllib would send the token on and turn the POST into a GET.
+        with pytest.raises(kbc.KBRequestError, match="redirects to"):
+            tools.kb_write([{"op": "add_node", "label": "X"}], url=same_url)
+    finally:
+        for server in (same, other):
+            server.shutdown()
+            server.server_close()
+
+
+def test_moved_base_keeps_the_host_and_https():
+    from vis_graphify.tools import _moved_base
+
+    def moved(base, location, status=301):
+        return _moved_base(base, kbc.KBRequestError("moved", status, location))
+
+    assert moved("http://kb.example.com", "https://kb.example.com/api/health") == "https://kb.example.com"
+    assert moved("http://kb.example.com/team", "https://kb.example.com/team/api/health", 308) == (
+        "https://kb.example.com/team"
+    )
+    assert moved("https://kb.example.com", "http://kb.example.com/api/health") is None
+    assert moved("http://kb.example.com", "https://other.example.net/api/health") is None
+    assert moved("http://kb.example.com", "https://kb.example.com/login") is None
+    assert moved("http://kb.example.com", "", 404) is None
+
+
+def test_normalize_url():
+    assert kbc.normalize_url("kb.example.com/") == "https://kb.example.com"
+    assert kbc.normalize_url(" HTTPS://kb.example.com/team/?q=1#top ") == "https://kb.example.com/team"
+    assert kbc.normalize_url("127.0.0.1:7878") == "http://127.0.0.1:7878"
+    assert kbc.normalize_url("localhost:7878") == "http://localhost:7878"
+    assert kbc.normalize_url("[::1]:7878") == "http://[::1]:7878"
+    for bad in ("", "ftp://kb.example.com", "https://"):
+        with pytest.raises(ValueError):
+            kbc.normalize_url(bad)
+    with pytest.raises(ValueError, match="Do not put the token in the URL") as error:
+        kbc.normalize_url("https://me:hunter2-hunter2@kb.example.com")
+    assert "hunter2" not in str(error.value)
+    assert kbc.is_loopback_url("http://127.0.0.2:1") and not kbc.is_loopback_url("https://kb.example.com")
+
+
+def test_server_text_warns_about_plain_http_off_loopback():
+    def text(url):
+        return str(kbc.KBServer(url, "/p/graph.json", 3, 2, 1, 1, False, False))
+
+    assert "unencrypted" in text("http://10.0.0.5:7878")
+    assert "unencrypted" not in text("https://kb.example.com") + text("http://127.0.0.1:7878")
+
+
+def test_client_keeps_the_base_path_and_explains_hosted_errors():
+    import io
+    import urllib.error
+
+    sent = []
+
+    def answer(request, timeout):
+        sent.append((request.full_url, request.get_header("Authorization")))
+        return io.BytesIO(b'{"ok": true}')
+
+    client = kbc.KBClient(url="https://kb.example.com/team", token=TOKEN, _opener=answer)
+    assert client.request("GET", "/api/stats") == {"ok": True}
+    assert sent == [("https://kb.example.com/team/api/stats", f"Bearer {TOKEN}")]
+    assert TOKEN not in repr(client)
+
+    def refuse(code, body, headers=None):
+        def opener(request, timeout):
+            raise urllib.error.HTTPError(request.full_url, code, "refused", headers or {}, io.BytesIO(body))
+
+        return kbc.KBClient(url="https://kb.example.com", _opener=opener)
+
+    with pytest.raises(kbc.KBRequestError, match="--allow-host kb.example.com"):
+        refuse(403, b'{"error": "unknown Host header"}').request("GET", "/api/stats")
+    with pytest.raises(kbc.KBRequestError, match="wait and try again [(]after 3 s[)]"):
+        refuse(429, b'{"error": "too many failed logins; wait and try again"}', {"Retry-After": "3"}).request(
+            "GET", "/api/stats"
+        )
+
+    def down(request, timeout):
+        raise urllib.error.URLError("no such host")
+
+    with pytest.raises(kbc.KBRequestError, match="Check the URL") as error:
+        kbc.KBClient(url="https://kb.example.com", _opener=down).request("GET", "/api/health")
+    assert "kb_serve" not in str(error.value)
+
+
 class FakeProcess:
     def __init__(self, server=None, code=None):
         self.server, self.code, self.pid, self.terminated = server, code, 4242, False
