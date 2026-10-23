@@ -44,10 +44,16 @@ class KBServer:
     version: Annotated[int, "Change counter of the server."]
     read_only: Annotated[bool, "True when the server refuses writes."]
     started: Annotated[bool, "True when this call started the server, False when it was already running."]
+    stopped: Annotated[bool, "True when kb_stop stopped the server. The counts are from just before the stop."] = False
     pid: Annotated[int | None, "Process id of a server that this extension started, else None."] = None
     log_path: Annotated[str, "Log file of a server that this extension started, else empty."] = ""
 
     def __str__(self) -> str:
+        if self.stopped:
+            return (
+                f"Stopped knowledge base {self.url}. It saved {self.nodes} nodes, {self.edges} edges "
+                f"and {self.documents} documents first."
+            )
         how = "Started" if self.started else "Using"
         mode = ", read-only" if self.read_only else ""
         return (

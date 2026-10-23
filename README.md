@@ -176,9 +176,10 @@ print(graphify.kb_publish())                       # static graphify-out/kb.html
 
 A batch in `kb_write` is one change: if one operation fails, the server applies none of them. Read
 with `kb_search` and `kb_node`. The other `kb_*` calls use the started server. Give `url` to use
-another server, or set `GRAPHIFY_KB_URL`. Off loopback, the server needs a token in
-`GRAPHIFY_KB_TOKEN`, and the client sends the same variable. `kb_stop()` stops a server that
-`kb_serve` started. The [knowledge base guide](https://github.com/Blockether/graphify/blob/v8/docs/kb.md)
+another server, or set `GRAPHIFY_KB_URL`. Off loopback, the server needs a token of at
+least 16 characters in `GRAPHIFY_KB_TOKEN`, and the client sends the same variable.
+`kb_stop()` stops a server that `kb_serve` started. The
+[knowledge base guide](https://github.com/Blockether/graphify/blob/v8/docs/kb.md)
 describes the HTTP API and the ontology.
 
 ## Development

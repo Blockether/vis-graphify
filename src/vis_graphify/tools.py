@@ -1227,7 +1227,7 @@ class GraphifyTools:
         Args:
             root: Project directory, relative to the workspace root.
             port: TCP port of the server.
-            host: Interface to bind. Off loopback, the server needs `$GRAPHIFY_KB_TOKEN`.
+            host: Interface to bind. Off loopback, the server needs `$GRAPHIFY_KB_TOKEN` with at least 16 characters.
             read_only: Refuse all writes.
             timeout_s: Stop waiting for the server after this many seconds.
         """
@@ -1295,7 +1295,7 @@ class GraphifyTools:
         if self._kb_url == client.url:
             self._kb_url = None
         health, stats = running or ({}, {})
-        return dataclasses.replace(kb.server(health, stats, client.url, started=False, pid=process.pid), nodes=0)
+        return dataclasses.replace(kb.server(health, stats, client.url, started=False, pid=process.pid), stopped=True)
 
     def kb_search(
         self, query: str, url: str | None = None, limit: int = 20, cls: str | None = None
@@ -1306,7 +1306,7 @@ class GraphifyTools:
             query: Plain words, not a regex.
             url: Server URL. None uses the server of kb_serve.
             limit: Maximum count of matches.
-            cls: Return only nodes of this ontology class, such as `concept` or `code`.
+            cls: Return only nodes of this ontology class or its subclasses, such as `concept` or `code`.
         """
         answer = self._kb(url).request("GET", "/api/search", query={"q": query, "limit": limit, "class": cls})
         return kb.search_result(query, answer)

@@ -31,13 +31,16 @@ def test_search_and_node_read_the_server(served):
     found = tools.kb_search("query", url=url)
     assert found.hits and found.hits[0].id == "src_app_db_query"
     node = tools.kb_node("src_app_db_query", url=url)
-    assert (node.label, node.cls, node.kb) == ("query()", "code", False)
+    # Since graphify v0.9.93-blockether.12, an extracted function has the class code.function.
+    assert (node.label, node.cls, node.kb) == ("query()", "code.function", False)
     assert {(e.direction, e.relation, e.other) for e in node.edges} >= {
         ("out", "calls", "src_app_db_connect"),
         ("in", "calls", "src_app_core_run"),
     }
     assert tools.kb_node("connect()", url=url).id == "src_app_db_connect"
-    assert presentation.kb_node(node).summary.startswith("query() (code)")
+    assert presentation.kb_node(node).summary.startswith("query() (code.function)")
+    # A class filter also finds the subclasses: code finds the code.function node.
+    assert tools.kb_search("query", url=url, cls="code").hits[0].id == "src_app_db_query"
 
 
 def test_search_without_matches_is_empty(served):
@@ -97,6 +100,8 @@ def test_ingest_text_file_and_inline_text(served, project):
 
 def test_validate_and_publish(served, project):
     tools, url = served
+    # graphify reports an orphan only for a node that the knowledge base added.
+    tools.kb_write([{"op": "add_node", "label": "Loose idea", "class": "concept"}], url=url)
     report = tools.kb_validate(url=url, info=True)
     assert report.notes >= 1 and report.by_code.get("orphan_node", 0) >= 1
     assert presentation.kb_validate(report).content[0].columns[0] == "Severity"
@@ -184,6 +189,9 @@ def test_serve_starts_graphify_then_reuses_and_stops(project):
     assert presentation.kb_server(again).headline == "Use knowledge base"
     stopped = tools.kb_stop()
     assert stopped.url.endswith(str(port))
+    # E2E report bug 22: the stop result said "Using knowledge base ... Open the URL".
+    assert stopped.stopped and str(stopped).startswith(f"Stopped knowledge base {stopped.url}.")
+    assert "Open the URL" not in str(stopped)
     with pytest.raises(RuntimeError, match="did not start"):
         tools.kb_stop(url=stopped.url)
 

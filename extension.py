@@ -8,7 +8,7 @@ from vis_graphify import presentation
 from vis_graphify.kb import KBSearchResult
 from vis_graphify.tools import GraphifyTools, HubsResult, ImpactResult, ReferencesResult, SearchResult
 
-VERSION = "0.8.1"
+VERSION = "0.9.0"
 
 _Tag = Literal["observation", "mutation"]
 
