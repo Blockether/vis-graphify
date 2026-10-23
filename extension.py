@@ -5,9 +5,10 @@ from typing import Literal
 import blockether.vis.extension as vis
 
 from vis_graphify import presentation
+from vis_graphify.kb import KBSearchResult
 from vis_graphify.tools import GraphifyTools, HubsResult, ImpactResult, ReferencesResult, SearchResult
 
-VERSION = "0.7.0"
+VERSION = "0.8.0"
 
 _Tag = Literal["observation", "mutation"]
 
@@ -16,6 +17,7 @@ vis.sequence(field="nodes")(SearchResult)
 vis.sequence(field="references")(ReferencesResult)
 vis.sequence(field="impacts")(ImpactResult)
 vis.sequence(field="hubs")(HubsResult)
+vis.sequence(field="hits")(KBSearchResult)
 
 
 def _bind(name, label, build, arguments=(), *, tag: _Tag = "observation", show_start=False):
@@ -83,6 +85,32 @@ _bind(
 )
 _bind("domain", "Map domain flows", presentation.domain, ("root", "plugins"), tag="mutation", show_start=True)
 
+_bind(
+    "kb_serve",
+    "Start knowledge base",
+    presentation.kb_server,
+    ("root", "port", "host", "read_only"),
+    tag="mutation",
+    show_start=True,
+)
+_bind("kb_stop", "Stop knowledge base", presentation.kb_stopped, ("url",), tag="mutation")
+_bind("kb_search", "Search knowledge base", presentation.kb_search, ("query", "url", "cls"))
+_bind("kb_node", "Read knowledge node", presentation.kb_node, ("node", "url"))
+_bind("kb_write", "Write knowledge base", presentation.kb_change("Write knowledge base"), ("url",), tag="mutation")
+_bind(
+    "kb_ingest",
+    "Ingest document",
+    presentation.kb_ingest,
+    ("source", "mode", "title", "url"),
+    tag="mutation",
+    show_start=True,
+)
+_bind("kb_validate", "Validate knowledge base", presentation.kb_validate, ("url", "limit"), show_start=True)
+_bind(
+    "kb_undo", "Undo knowledge change", presentation.kb_change("Undo knowledge change"), ("url", "seq"), tag="mutation"
+)
+_bind("kb_publish", "Publish knowledge base", presentation.kb_publish, ("url", "path"), tag="mutation")
+
 PROMPT = """graphify: an exact code graph of the workspace (tree-sitter) for Python, JS, TS, Go, Rust, Java, Clojure and more. It builds and updates itself.
 Make one graphify call the first step, before any ls, cat, grep or shell:
   print(graphify.affected(node, within="src/api/"))  what a change can break, across all steps
@@ -95,12 +123,17 @@ Results are exact and complete: strings, comments and other symbols with the sam
 affected lists the dependent functions in `r.functions` and the private ones in `r.private`. Write an answer from these fields in the same block.
 rename, add_parameter, move and move_file write nothing on a conflict. After a write, they run the project check. When the result says `passed`, reply at once.
 Name a node by `pkg.Name`, `Class.method`, `ns/name`, `crate::mod::name` or bare name. When the task names the file, use `src/money/format.ts::name`.
-Also: graphify.explain(node) · shortest_path(a, b) · search(pattern) · hubs() · domain() (edd-core flows -> DOMAIN.md)."""
+Also: graphify.explain(node) · shortest_path(a, b) · search(pattern) · hubs() · domain() (edd-core flows -> DOMAIN.md).
+Knowledge base (ontology, documents, undoable edits, admin UI in the browser), shared with people over HTTP:
+  print(graphify.kb_serve())    start or reuse `graphify kb serve` for the project graph; give the user its URL
+  graphify.kb_search(q) · kb_node(id) · kb_validate()   read nodes, documents and ontology findings
+  graphify.kb_write([{"op": "add_node", "label": "Billing", "class": "concept"}, {"op": "add_edge", ...}])  one undoable change; doc("graphify.kb_write") lists the ops
+  graphify.kb_ingest("docs/spec.pdf", mode="text"|"llm") · kb_undo() · kb_publish() (static kb.html)"""
 
 vis.register_extension(
     vis.Extension(
         name="vis-graphify",
-        description="Code knowledge graphs with graphify: build, search, explain, paths, hubs, change impact, exact references, safe renames and moves of definitions and files, and domain flows (edd-core commands, queries, events, Malli schemas).",
+        description="Code knowledge graphs with graphify: build, search, explain, paths, hubs, change impact, exact references, safe renames and moves of definitions and files, domain flows (edd-core commands, queries, events, Malli schemas), and a knowledge base server with ontology, documents and undoable edits.",
         version=VERSION,
         alias="graphify",
         symbols=[vis.Symbol(GraphifyTools(workspace_root=vis.workspace_root), name="graphify")],

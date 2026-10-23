@@ -21,6 +21,9 @@ namespaces, vars, `:require` aliases, cross-file calls, protocols, records and C
 - You join an unknown codebase and want its central code first: use `graphify.hubs`.
 - You want to see how commands, queries and events flow between your services, or find calls to
   commands that no service registers: use `graphify.domain`. See [Domain flows](#domain-flows).
+- You want to edit the graph together with an agent: add concepts and documents, check them against
+  an ontology and see the result in the browser. Use `graphify.kb_serve`. See
+  [Knowledge base](#knowledge-base).
 
 The graph comes from tree-sitter syntax trees. A build makes no LLM call and sends no code anywhere.
 
@@ -149,6 +152,34 @@ describes the contract. Make the plugin available in one of these ways:
 - Pass its path or name in `plugins`, for example `graphify.domain(plugins=["tools/jobs.py"])`.
 - Add it to `src/vis_graphify/domain_plugins/` in this repository. Every Vis user of the
   extension then gets it.
+
+## Knowledge base
+
+`graphify.kb_serve()` starts `graphify kb serve` for the project graph and returns its URL. Open the
+URL in a browser for the admin UI: a graph map, node inspector, ontology, consistency findings,
+documents and change history. You and the agent edit the same graph. The server writes each change
+to `<root>/graphify-out/kb/`, and each change is undoable.
+
+```python
+print(graphify.kb_serve())
+graphify.kb_write([
+    {"op": "add_node", "label": "Billing", "class": "concept"},
+    {"op": "add_edge", "source": "kb:billing", "target": "src_billing_invoice", "relation": "uses"},
+    {"op": "add_document", "title": "Billing rules", "body": "[[Billing]] runs nightly."},
+])
+print(graphify.kb_ingest("docs/billing.pdf"))      # text mode: no model call
+print(graphify.kb_ingest("notes.md", mode="llm"))  # the model adds nodes and edges
+print(graphify.kb_validate())                      # ontology findings, errors first
+graphify.kb_undo()                                 # revert the latest change
+print(graphify.kb_publish())                       # static graphify-out/kb.html
+```
+
+A batch in `kb_write` is one change: if one operation fails, the server applies none of them. Read
+with `kb_search` and `kb_node`. The other `kb_*` calls use the started server. Give `url` to use
+another server, or set `GRAPHIFY_KB_URL`. Off loopback, the server needs a token in
+`GRAPHIFY_KB_TOKEN`, and the client sends the same variable. `kb_stop()` stops a server that
+`kb_serve` started. The [knowledge base guide](https://github.com/Blockether/graphify/blob/v8/docs/kb.md)
+describes the HTTP API and the ontology.
 
 ## Development
 

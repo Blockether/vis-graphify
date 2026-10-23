@@ -5,6 +5,7 @@ This module is plain Python. `extension.py` binds it to Vis.
 
 from __future__ import annotations
 
+import base64
 import dataclasses
 import difflib
 import fnmatch
@@ -17,11 +18,13 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Callable
 
 from vis_graphify import graph as g
+from vis_graphify import kb
 
 
 @dataclass(frozen=True)
@@ -683,10 +686,16 @@ class GraphifyTools:
         workspace_root: Callable[[], str] | None = None,
         runner: Runner | None = None,
         checker: Callable[[Path, list[str]], str] | None = None,
+        spawn: Callable[..., subprocess.Popen] | None = None,
+        kb_actor: str = "agent",
     ):
         self._workspace_root = workspace_root or os.getcwd
         self._run = runner or subprocess.run
         self._check = checker or project_check
+        self._spawn = spawn or subprocess.Popen
+        self._kb_actor = kb_actor
+        self._kb_url: str | None = None
+        self._kb_servers: dict[str, subprocess.Popen] = {}
 
     def _root(self, root: str) -> Path:
         path = Path(root).expanduser()
@@ -1187,3 +1196,234 @@ class GraphifyTools:
             plugin_errors=tuple(line[len(prefix) :] for line in stderr.splitlines() if line.startswith(prefix)),
             truncated=len(raw) > limit,
         )
+
+    def _kb(self, url: str | None, timeout_s: float = 60.0) -> kb.KBClient:
+        """A client for `url`, else the server that kb_serve started, else `$GRAPHIFY_KB_URL`, else the default."""
+        target = url or self._kb_url or os.environ.get("GRAPHIFY_KB_URL") or kb.DEFAULT_URL
+        return kb.KBClient(
+            url=target, token=os.environ.get("GRAPHIFY_KB_TOKEN") or None, actor=self._kb_actor, timeout_s=timeout_s
+        )
+
+    @staticmethod
+    def _kb_probe(client: kb.KBClient) -> tuple[dict, dict] | None:
+        """The health and stats answers of a running server, or None when nothing answers."""
+        try:
+            health = client.request("GET", "/api/health")
+        except kb.KBRequestError:
+            return None
+        return health, client.request("GET", "/api/stats")
+
+    def kb_serve(
+        self, root: str = ".", port: int = 7878, host: str = "127.0.0.1", read_only: bool = False, timeout_s: int = 120
+    ) -> kb.KBServer:
+        """Start the knowledge base server of a project graph, or use the one that already runs.
+
+        The server is `graphify kb serve`: an HTTP API and an admin UI in the
+        browser. People and agents edit the same graph there. Changes are
+        undoable and the server writes them to `graphify-out/kb/`. The other
+        kb_* methods use this server until you give them another `url`.
+        Builds the graph first when it is missing.
+
+        Args:
+            root: Project directory, relative to the workspace root.
+            port: TCP port of the server.
+            host: Interface to bind. Off loopback, the server needs `$GRAPHIFY_KB_TOKEN`.
+            read_only: Refuse all writes.
+            timeout_s: Stop waiting for the server after this many seconds.
+        """
+        path = self._root(root)
+        graph_file = g.graph_path(path)
+        if not graph_file.is_file():
+            self._update(path)
+        url = f"http://{f'[{host}]' if ':' in host else host}:{port}"
+        client = self._kb(url)
+        running = self._kb_probe(client)
+        if running:
+            health, stats = running
+            served = Path(str(stats.get("graph") or "")).resolve()
+            if served != graph_file.resolve():
+                raise RuntimeError(f"Port {port} already serves {served}. Choose another port.")
+            self._kb_url = url
+            process = self._kb_servers.get(url)
+            return kb.server(health, stats, url, started=False, pid=process.pid if process else None)
+        out = graph_file.parent
+        _ignore_output(out)
+        log = out / "kb-serve.log"
+        argv = graphify_command() + ["kb", "serve", str(graph_file), "--host", host, "--port", str(port)]
+        if read_only:
+            argv.append("--read-only")
+        with open(log, "wb") as handle:
+            process = self._spawn(
+                argv,
+                cwd=str(path),
+                env=_child_env(),
+                stdin=subprocess.DEVNULL,
+                stdout=handle,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+        deadline = time.monotonic() + timeout_s
+        while (running := self._kb_probe(client)) is None:
+            if process.poll() is not None:
+                output = log.read_text(encoding="utf-8", errors="replace") if log.is_file() else ""
+                raise RuntimeError(f"graphify kb serve exited with status {process.returncode}.\n{_tail(output)}")
+            if time.monotonic() > deadline:
+                process.terminate()
+                raise TimeoutError(f"graphify kb serve did not answer at {url} in {timeout_s} s.")
+            time.sleep(0.2)
+        self._kb_servers[url] = process
+        self._kb_url = url
+        return kb.server(*running, url, started=True, pid=process.pid, log=str(log))
+
+    def kb_stop(self, url: str | None = None) -> kb.KBServer:
+        """Stop a knowledge base server that kb_serve started. The server writes pending changes first.
+
+        Args:
+            url: Server URL. None stops the server that the kb_* methods use.
+        """
+        client = self._kb(url)
+        process = self._kb_servers.get(client.url)
+        if process is None:
+            raise RuntimeError(f"This extension did not start the server at {client.url}. Stop it where it runs.")
+        running = self._kb_probe(client)
+        process.terminate()
+        try:
+            process.wait(timeout=15)
+        except subprocess.TimeoutExpired:
+            process.kill()
+        del self._kb_servers[client.url]
+        if self._kb_url == client.url:
+            self._kb_url = None
+        health, stats = running or ({}, {})
+        return dataclasses.replace(kb.server(health, stats, client.url, started=False, pid=process.pid), nodes=0)
+
+    def kb_search(
+        self, query: str, url: str | None = None, limit: int = 20, cls: str | None = None
+    ) -> kb.KBSearchResult:
+        """Search the nodes and documents of the knowledge base by label, id, title and text.
+
+        Args:
+            query: Plain words, not a regex.
+            url: Server URL. None uses the server of kb_serve.
+            limit: Maximum count of matches.
+            cls: Return only nodes of this ontology class, such as `concept` or `code`.
+        """
+        answer = self._kb(url).request("GET", "/api/search", query={"q": query, "limit": limit, "class": cls})
+        return kb.search_result(query, answer)
+
+    def kb_node(self, node: str, url: str | None = None, limit: int = 50) -> kb.KBNode:
+        """One knowledge base node with its class, attributes and edges.
+
+        Args:
+            node: Node id, or an exact label when no node has that id.
+            url: Server URL. None uses the server of kb_serve.
+            limit: Maximum count of edges in each direction.
+        """
+        client = self._kb(url)
+        try:
+            answer = client.request("GET", kb.node_path(node), query={"limit": limit})
+        except kb.KBRequestError as error:
+            if error.status != 404:
+                raise
+            answer = client.request("GET", "/api/nodes", query={"label": node})
+        return kb.node_result(answer)
+
+    def kb_write(self, ops: list[dict], url: str | None = None) -> kb.KBChange:
+        """Apply operations to the knowledge base as one undoable change. One failure applies nothing.
+
+        Each operation is a dict with an `op` key:
+          {"op": "add_node", "label": ..., "class": ..., "id": ..., "attrs": {...}}
+          {"op": "update_node", "id": ..., "attrs": {...}}   a None value removes the attribute
+          {"op": "delete_node", "id": ...}                  also removes its edges
+          {"op": "add_edge", "source": ..., "target": ..., "relation": ..., "confidence": ..., "attrs": {...}}
+          {"op": "update_edge" | "delete_edge", "id": ...} or with source, target and relation
+          {"op": "add_document", "title": ..., "body": markdown, "tags": [...], "nodes": [ids]}
+          {"op": "update_document", "id": ..., "title" | "body" | "tags" | "nodes": ...}
+          {"op": "delete_document", "id": ...}
+        A `[[label]]` in a document body links the document to that node.
+
+        Args:
+            ops: The operations, in order. At most 10000.
+            url: Server URL. None uses the server of kb_serve.
+        """
+        if not isinstance(ops, (list, tuple)) or not ops:
+            raise ValueError("ops must be a non-empty list of operation dicts.")
+        answer = self._kb(url).request("POST", "/api/batch", {"ops": list(ops)})
+        names = Counter(str(op.get("op")) for op in ops if isinstance(op, dict))
+        summary = ", ".join(f"{count} {name}" for name, count in names.items())
+        return kb.change_result(f"Applied {summary}", answer)
+
+    def kb_ingest(
+        self,
+        source: str,
+        url: str | None = None,
+        mode: str = "text",
+        title: str | None = None,
+        tags: list[str] | None = None,
+        link: bool = True,
+        text: str | None = None,
+    ) -> kb.KBIngestResult:
+        """Add a file, a web page or text to the knowledge base as a document.
+
+        Markdown and text stay as they are. PDF, HTML, images and other files
+        become attachments with extracted text when the server can read it.
+        `text` mode links the document to the nodes that it names, without a
+        model. `llm` mode also asks the graphify model backend for new nodes
+        and edges.
+
+        Args:
+            source: A file path relative to the workspace root, an http(s) URL, or the document name when `text` is set.
+            url: Server URL. None uses the server of kb_serve.
+            mode: `text` or `llm`.
+            title: Document title. None uses the file name or the first heading.
+            tags: Document tags.
+            link: Link the document to the existing nodes that it names.
+            text: Document content. Then `source` is only its name.
+        """
+        if mode not in ("text", "llm"):
+            raise ValueError("mode must be 'text' or 'llm'.")
+        body: dict = {"mode": mode, "title": title, "tags": list(tags) if tags else None, "link": link}
+        if text is not None:
+            body.update(name=source, text=text)
+        elif source.startswith(("http://", "https://")):
+            body.update(name=source.rstrip("/").rsplit("/", 1)[-1] or "page", url=source)
+        else:
+            file = Path(source).expanduser()
+            if not file.is_absolute():
+                file = Path(self._workspace_root()) / file
+            if not file.is_file():
+                raise FileNotFoundError(f"{file} is not a file.")
+            body.update(name=file.name, data_base64=base64.b64encode(file.read_bytes()).decode())
+        answer = self._kb(url, 900.0 if mode == "llm" else 120.0).request("POST", "/api/ingest", body)
+        return kb.ingest_result(answer)
+
+    def kb_validate(self, url: str | None = None, limit: int = 50, info: bool = False) -> kb.KBReport:
+        """Check the knowledge base against its ontology: missing properties, bad edge ends, orphans, cycles.
+
+        Args:
+            url: Server URL. None uses the server of kb_serve.
+            limit: Maximum count of returned findings. The counts stay complete.
+            info: Also return info findings, such as orphan nodes.
+        """
+        query = {"limit": limit, "info": "1" if info else "0"}
+        return kb.report_result(self._kb(url).request("GET", "/api/validate", query=query))
+
+    def kb_undo(self, url: str | None = None, seq: int | None = None) -> kb.KBChange:
+        """Revert the latest change, or the change with history number `seq`.
+
+        Args:
+            url: Server URL. None uses the server of kb_serve.
+            seq: History number of the change. None reverts the latest change that is not reverted yet.
+        """
+        answer = self._kb(url).request("POST", "/api/undo", {"seq": seq} if seq is not None else {})
+        return kb.change_result("Undo", answer)
+
+    def kb_publish(self, url: str | None = None, path: str | None = None) -> kb.KBPublishResult:
+        """Write a static HTML view of the knowledge base that opens without a server.
+
+        Args:
+            url: Server URL. None uses the server of kb_serve.
+            path: An `.html` file name inside `graphify-out/`. None writes `graphify-out/kb.html`.
+        """
+        answer = self._kb(url).request("POST", "/api/publish", {"path": path} if path else {})
+        return kb.KBPublishResult(path=str(answer.get("path") or ""), bytes=int(answer.get("bytes") or 0))

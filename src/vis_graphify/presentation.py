@@ -6,6 +6,7 @@ from typing import Callable
 
 import blockether.vis.extension as vis
 
+from vis_graphify.kb import KBChange, KBIngestResult, KBNode, KBPublishResult, KBReport, KBSearchResult, KBServer
 from vis_graphify.tools import (
     BuildResult,
     DomainReport,
@@ -301,6 +302,92 @@ def domain(result: DomainReport) -> vis.ActivityPresentation:
             ),
         ]
     return vis.ActivityPresentation("Map domain flows", summary, tuple(content))
+
+
+def kb_server(result: KBServer) -> vis.ActivityPresentation:
+    label = "Start knowledge base" if result.started else "Use knowledge base"
+    mode = ", read-only" if result.read_only else ""
+    summary = f"{result.url}{mode}: {result.nodes} nodes, {result.edges} edges, {_plural(result.documents, 'document')}"
+    content = [vis.ActivityText(result.graph_path)] if result.graph_path else []
+    if result.log_path:
+        content.append(vis.ActivityText(f"Log: {result.log_path}"))
+    return vis.ActivityPresentation(label, summary, tuple(content))
+
+
+def kb_stopped(result: KBServer) -> vis.ActivityPresentation:
+    return vis.ActivityPresentation("Stop knowledge base", f"stopped {result.url}", ())
+
+
+def kb_search(result: KBSearchResult) -> vis.ActivityPresentation:
+    if not result.hits:
+        return vis.ActivityPresentation(
+            "Search knowledge base", "no matches", (vis.ActivityText(f"Nothing matches {result.query!r}."),)
+        )
+    rows = tuple((hit.label, hit.kind, hit.cls, hit.source_file) for hit in result.hits)
+    return vis.ActivityPresentation(
+        "Search knowledge base",
+        f"{len(result.hits)} {'match' if len(result.hits) == 1 else 'matches'} for {result.query!r}",
+        (
+            vis.ActivityTable(
+                ("Label", "Kind", "Class", "Source"), rows, paths=tuple(h.source_file for h in result.hits)
+            ),
+        ),
+    )
+
+
+def kb_node(result: KBNode) -> vis.ActivityPresentation:
+    rows = tuple(
+        ("out" if e.direction == "out" else "in", e.relation, e.other_label, e.confidence) for e in result.edges[:50]
+    )
+    content: list = [vis.ActivityText(f"{result.id} ({'knowledge base' if result.kb else 'built'})")]
+    if rows:
+        content.append(vis.ActivityTable(("Direction", "Relation", "Node", "Confidence"), rows))
+    return vis.ActivityPresentation(
+        "Read knowledge node",
+        f"{result.label} ({result.cls}), {result.out_total} out, {result.in_total} in",
+        tuple(content),
+    )
+
+
+def kb_change(label: str):
+    def build(result: KBChange) -> vis.ActivityPresentation:
+        rows = tuple(
+            (str(r.get("id") or r.get("value") or ""), str(r.get("label") or r.get("title") or r.get("relation") or ""))
+            for r in result.results[:50]
+        )
+        content = (vis.ActivityTable(("Id", "Label"), rows),) if rows else ()
+        return vis.ActivityPresentation(label, f"{result.summary}, version {result.version}", content)
+
+    return build
+
+
+def kb_ingest(result: KBIngestResult) -> vis.ActivityPresentation:
+    summary = (
+        f"{result.title} ({result.mode}): {_plural(len(result.linked), 'linked node')}, "
+        f"{_plural(len(result.nodes_added), 'new node')}, {_plural(result.edges_added, 'new edge')}"
+    )
+    content: list = [vis.ActivityText(result.document_id)]
+    if result.linked:
+        content.append(vis.ActivityText("Linked: " + _clip(", ".join(result.linked), 600)))
+    content += [vis.ActivityText(note) for note in result.notes]
+    return vis.ActivityPresentation("Ingest document", summary, tuple(content))
+
+
+def kb_validate(result: KBReport) -> vis.ActivityPresentation:
+    summary = (
+        f"{_plural(result.errors, 'error')}, {_plural(result.warnings, 'warning')}, {_plural(result.notes, 'note')}"
+    )
+    if not result.findings:
+        return vis.ActivityPresentation("Validate knowledge base", summary, (vis.ActivityText("No findings."),))
+    rows = tuple((f.severity, f.code, _clip(f.message, 160), f.node or f.edge) for f in result.findings[:50])
+    content: list = [vis.ActivityTable(("Severity", "Code", "Message", "Element"), rows)]
+    if result.by_code:
+        content.append(vis.ActivityTable(("Code", "Findings"), tuple((k, str(v)) for k, v in result.by_code.items())))
+    return vis.ActivityPresentation("Validate knowledge base", summary, tuple(content))
+
+
+def kb_publish(result: KBPublishResult) -> vis.ActivityPresentation:
+    return vis.ActivityPresentation("Publish knowledge base", f"{result.bytes} bytes", (vis.ActivityText(result.path),))
 
 
 def _arguments(names: tuple[str, ...]) -> Callable[[tuple, dict], tuple]:

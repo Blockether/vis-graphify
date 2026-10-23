@@ -103,6 +103,15 @@ def test_extension_registers_every_tool_with_an_activity(monkeypatch):
             "move",
             "move_file",
             "domain",
+            "kb_serve",
+            "kb_stop",
+            "kb_search",
+            "kb_node",
+            "kb_write",
+            "kb_ingest",
+            "kb_validate",
+            "kb_undo",
+            "kb_publish",
         ]
     )
     for name in public:
