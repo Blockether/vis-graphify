@@ -8,7 +8,7 @@ from vis_graphify import presentation
 from vis_graphify.kb import KBSearchResult
 from vis_graphify.tools import GraphifyTools, HubsResult, ImpactResult, ReferencesResult, SearchResult
 
-VERSION = "0.8.0"
+VERSION = "0.8.1"
 
 _Tag = Literal["observation", "mutation"]
 
@@ -133,7 +133,7 @@ Knowledge base (ontology, documents, undoable edits, admin UI in the browser), s
 vis.register_extension(
     vis.Extension(
         name="vis-graphify",
-        description="Code knowledge graphs with graphify: build, search, explain, paths, hubs, change impact, exact references, safe renames and moves of definitions and files, domain flows (edd-core commands, queries, events, Malli schemas), and a knowledge base server with ontology, documents and undoable edits.",
+        description="Code knowledge graphs for Vis with graphify: search, change impact, exact references, safe renames and moves, domain flows, and a knowledge base server with ontology, documents and undoable edits.",
         version=VERSION,
         alias="graphify",
         symbols=[vis.Symbol(GraphifyTools(workspace_root=vis.workspace_root), name="graphify")],
