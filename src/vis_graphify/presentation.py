@@ -13,6 +13,7 @@ from vis_graphify.tools import (
     GraphStatus,
     HubsResult,
     ImpactResult,
+    MoveResult,
     Node,
     PathResult,
     ReferencesResult,
@@ -243,6 +244,36 @@ def add_parameter(result: SignatureResult) -> vis.ActivityPresentation:
         f"{change}: {state}, {_plural(calls, 'call')} in {_plural(len(result.files), 'file')}{checked}",
         content,
     )
+
+
+def _move(label: str, result: MoveResult) -> vis.ActivityPresentation:
+    change = f"{result.subject}: {result.source} → {result.target}"
+    if result.conflicts:
+        content = tuple(vis.ActivityText(conflict) for conflict in result.conflicts)
+        return vis.ActivityPresentation(
+            label, f"{change}: not written, {_plural(len(result.conflicts), 'conflict')}", content
+        )
+    state = "moved" if result.applied else "preview"
+    checked, failure = _check(result.check)
+    content: tuple = failure
+    if result.renames:
+        content += (vis.ActivityText("Renamed: " + ", ".join(result.renames)),)
+    if result.notes:
+        content += (vis.ActivityText("\n".join(result.notes)),)
+    if result.diff:
+        content += (vis.ActivityDiff(_clip(result.diff, 8000), "diff"),)
+    if result.mentions:
+        kept = "\n".join(result.mentions[:10]) + ("\n…" if len(result.mentions) > 10 else "")
+        content += (vis.ActivityText(f"Other code that names the old place and stays:\n{kept}"),)
+    return vis.ActivityPresentation(label, f"{change}: {state}, {_plural(len(result.files), 'file')}{checked}", content)
+
+
+def move(result: MoveResult) -> vis.ActivityPresentation:
+    return _move("Move definition", result)
+
+
+def move_file(result: MoveResult) -> vis.ActivityPresentation:
+    return _move("Move file", result)
 
 
 def domain(result: DomainReport) -> vis.ActivityPresentation:

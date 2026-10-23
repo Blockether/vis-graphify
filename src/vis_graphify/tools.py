@@ -372,6 +372,50 @@ class SignatureResult:
         return "\n".join(lines)
 
 
+@dataclass(frozen=True)
+class MoveResult:
+    """A move preview, or the move that was written."""
+
+    subject: Annotated[str, "What moves: a definition name or a file."]
+    source: Annotated[str, "The old file, relative to the project root."]
+    target: Annotated[str, "The new file, relative to the project root."]
+    applied: Annotated[bool, "True when the files were written."]
+    files: Annotated[tuple[str, ...], "Every file that the move writes, creates or deletes."]
+    created: Annotated[tuple[str, ...], "New files."]
+    deleted: Annotated[tuple[str, ...], "Removed files: the old file of a file move."]
+    renames: Annotated[tuple[str, ...], "`old -> new` module or namespace names, such as test namespaces."]
+    conflicts: Annotated[tuple[str, ...], "Reasons that make the move unsafe. With a conflict, nothing is written."]
+    notes: Annotated[tuple[str, ...], "Side changes, such as a visibility change or an import that moved."]
+    mentions: Annotated[tuple[str, ...], "`file:line text` of code that names the old place and stays. Check them."]
+    text_mentions: Annotated[int, "Count of strings, comments and data that name the old place and stay."]
+    diff: Annotated[str, "Unified diff of the change."]
+    check: Annotated[
+        str,
+        "The project check that ran after the write, such as `go vet ./...: passed`, with the first error lines on failure. Empty when none ran.",
+    ] = ""
+
+    def __str__(self) -> str:
+        """A short summary: the move, conflicts, renames, notes, code mentions and the diff."""
+        change = f"{self.subject}: {self.source} -> {self.target}, {len(self.files)} files"
+        if self.conflicts:
+            return "\n".join([f"Blocked move of {change}. Nothing was written. Conflicts:", *self.conflicts])
+        lines = [
+            f"Moved {change}:" if self.applied else f"Preview move of {change}. Call again with apply=True to write:"
+        ]
+        if self.renames:
+            lines.append("Renamed: " + ", ".join(self.renames))
+        lines += self.notes
+        if self.mentions:
+            more = [f"… {len(self.mentions) - 10} more in `mentions`."] if len(self.mentions) > 10 else []
+            lines += ["Other code that names the old place and stays:", *self.mentions[:10], *more]
+        if self.text_mentions:
+            lines.append(f"Kept {self.text_mentions} mentions in strings, comments and data.")
+        lines.append(_clip_lines(self.diff, 80))
+        if self.check:
+            lines.append(f"Check {self.check}")
+        return "\n".join(lines)
+
+
 def _relative(root: Path, file: str) -> str:
     path = Path(file)
     return path.relative_to(root).as_posix() if path.is_relative_to(root) else file
@@ -491,12 +535,13 @@ def _unified_diff(root: Path, contents: dict) -> str:
     chunks = []
     for file, (old, new) in sorted(contents.items()):
         name = _relative(root, file)
+        # A created file has no old bytes and a deleted file has no new bytes.
         chunks.extend(
             difflib.unified_diff(
-                old.decode("utf-8", "replace").splitlines(keepends=True),
-                new.decode("utf-8", "replace").splitlines(keepends=True),
-                f"a/{name}",
-                f"b/{name}",
+                (old or b"").decode("utf-8", "replace").splitlines(keepends=True),
+                (new or b"").decode("utf-8", "replace").splitlines(keepends=True),
+                f"a/{name}" if old is not None else "/dev/null",
+                f"b/{name}" if new is not None else "/dev/null",
             )
         )
     return "".join(chunks)
@@ -986,6 +1031,91 @@ class GraphifyTools:
             conflicts=tuple(c.replace(f"{path}/", "") for c in plan.conflicts),
             diff=_unified_diff(path, {str(path / file): (old[file], data) for file, data in new.items()}),
             changes=_changed(path, new, [(i.file, i.line) for i in plan.inserts]),
+            check=checked,
+        )
+
+    def move(self, node: str, to: str, root: str = ".", apply: bool = False, check: bool = True) -> MoveResult:
+        """Move one top-level definition to another file, which can be new, and fix every use.
+
+        Works for Python, JavaScript, TypeScript, Go, Rust and Clojure. Each import, require
+        and qualified use follows the definition, and the definition takes the imports that
+        it needs. Rust also moves `impl` blocks of a moved type and widens private items to
+        `pub(crate)` when the new module needs them. With `apply=True`, the files are written unless a conflict blocks the move,
+        such as a name that the target file already defines or an import cycle. A written
+        move updates the graph and, with `check`, runs the project check, as `rename` does.
+
+        Args:
+            node: The definition: id, label, qualified name or `file::name`.
+            to: The target file, relative to the project root. For Clojure, also a namespace name.
+            root: Project directory, relative to the workspace root.
+            apply: Write the files when the plan has no conflict.
+            check: After a write, run the project check and report it in `check`.
+        """
+        from graphify import moves
+
+        path = self._root(root)
+        graph = self._graph(path)
+        try:
+            node_id = g.resolve(graph, node)
+        except g.NodeNotFound:
+            if "::" not in node:
+                raise
+            node_id = node
+        plan = moves.plan_move(_raw(graph), node_id, to, path)
+        return self._moved(path, plan, apply, check)
+
+    def move_file(
+        self, path: str, new_path: str, root: str = ".", tests: bool = True, apply: bool = False, check: bool = True
+    ) -> MoveResult:
+        """Move or rename a source file and rename its module or namespace at every use.
+
+        Works for Python, JavaScript, TypeScript, Go, Rust and Clojure. Imports, requires,
+        `mod` declarations and qualified uses follow the file. For Clojure, the `ns` form
+        changes, and with `tests` the test namespace `x-test` of namespace `x` moves along.
+        With `apply=True`, the files are written unless a conflict blocks the move, such as
+        a target file that exists. A written move updates the graph and, with `check`,
+        runs the project check, as `rename` does.
+
+        Args:
+            path: The file to move, relative to the project root.
+            new_path: The new file path, relative to the project root. For Clojure, also a namespace name.
+            root: Project directory, relative to the workspace root.
+            tests: For Clojure, also move the test namespace of the moved namespace.
+            apply: Write the files when the plan has no conflict.
+            check: After a write, run the project check and report it in `check`.
+        """
+        from graphify import moves
+
+        base = self._root(root)
+        plan = moves.plan_move_file(_raw(self._graph(base)), path, new_path, base, tests=tests)
+        return self._moved(base, plan, apply, check)
+
+    def _moved(self, path: Path, plan, apply: bool, check: bool) -> MoveResult:
+        """Write a conflict-free move plan when `apply` is set, then describe it."""
+        from graphify import moves
+
+        applied = False
+        checked = ""
+        if apply and not plan.conflicts:
+            moves.apply_move(plan)
+            applied = True
+            self._update(path)
+            kept = [_relative(path, f) for f in plan.files if f not in plan.deleted]
+            checked = self._check(path, kept) if check else ""
+        return MoveResult(
+            subject=plan.subject,
+            source=_relative(path, plan.source),
+            target=_relative(path, plan.target),
+            applied=applied,
+            files=tuple(_relative(path, f) for f in plan.files),
+            created=tuple(_relative(path, f) for f in plan.created),
+            deleted=tuple(_relative(path, f) for f in plan.deleted),
+            renames=tuple(f"{old} -> {new}" for old, new in plan.renames),
+            conflicts=tuple(c.replace(f"{path}/", "") for c in plan.conflicts),
+            notes=tuple(n.replace(f"{path}/", "") for n in plan.notes),
+            mentions=tuple(f"{_relative(path, m.file)}:{m.line} {m.text}" for m in plan.mentions if m.kind == "symbol"),
+            text_mentions=sum(1 for m in plan.mentions if m.kind != "symbol"),
+            diff=_unified_diff(path, plan.contents),
             check=checked,
         )
 

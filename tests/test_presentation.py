@@ -15,6 +15,7 @@ from vis_graphify.tools import (
     GraphifyTools,
     HubsResult,
     ImpactResult,
+    MoveResult,
     PathResult,
     Reference,
     ReferencesResult,
@@ -99,6 +100,8 @@ def test_extension_registers_every_tool_with_an_activity(monkeypatch):
             "references",
             "rename",
             "add_parameter",
+            "move",
+            "move_file",
             "domain",
         ]
     )
@@ -165,6 +168,24 @@ def test_reference_and_rename_states(tools):
     assert summary(presentation.rename(checked)) == "connect → open: renamed, 1 edit in 1 file, tsc passed"
     blocked = RenameResult(node, "connect", "run", False, (), (), ("x already uses `run`.",), (), 0, "")
     assert summary(presentation.rename(blocked)) == "connect → run: not written, 1 conflict"
+
+
+def test_move_states():
+    files = ("app/main.py", "app/text.py", "app/util.py")
+    preview = MoveResult(
+        "slugify", "app/util.py", "app/text.py", False, files, ("app/text.py",), (), (), (), (), (), 0, "-a\n+b\n"
+    )
+    assert summary(presentation.move(preview)) == "slugify: app/util.py → app/text.py: preview, 3 files"
+    done = dataclasses.replace(preview, applied=True, check="tsc --noEmit -p .: passed")
+    assert summary(presentation.move(done)) == "slugify: app/util.py → app/text.py: moved, 3 files, tsc passed"
+    renamed = dataclasses.replace(done, subject="app.util", renames=("app.util-test -> app.text-test",), check="")
+    moved = presentation.move_file(renamed)
+    assert moved.headline == "Move file" and summary(moved) == "app.util: app/util.py → app/text.py: moved, 3 files"
+    assert "Renamed: app.util-test -> app.text-test" in [getattr(block, "text", "") for block in moved.content]
+    blocked = dataclasses.replace(preview, files=(), conflicts=("app/text.py already defines `slugify`.",), diff="")
+    assert summary(presentation.move(blocked)) == "slugify: app/util.py → app/text.py: not written, 1 conflict"
+    assert "Blocked move" in str(blocked) and "Nothing was written" in str(blocked)
+    assert str(preview).startswith("Preview move of slugify: app/util.py -> app/text.py, 3 files.")
 
 
 def test_rename_refuses_a_node_without_name_sites(tools):

@@ -14,6 +14,9 @@ namespaces, vars, `:require` aliases, cross-file calls, protocols, records and C
   [Rename a symbol](#rename-a-symbol).
 - You want to add a parameter to a function and pass a value at every call: use
   `graphify.add_parameter`. See [Add a parameter](#add-a-parameter).
+- You want to move a function or a type to another file, or move a file to a new module or
+  namespace, and fix every import: use `graphify.move` or `graphify.move_file`. See
+  [Move code](#move-code).
 - You want to see how two parts of the code connect: use `graphify.shortest_path`.
 - You join an unknown codebase and want its central code first: use `graphify.hubs`.
 - You want to see how commands, queries and events flow between your services, or find calls to
@@ -46,6 +49,8 @@ The agent uses these tools in its Python sandbox:
 | `graphify.references("my.ns/run")` | Every exact site of a symbol: file, line, column and role. |
 | `graphify.rename("my.ns/run", "start", apply=True)` | Renames the symbol everywhere and updates the graph. Without `apply`, it only returns the diff. |
 | `graphify.add_parameter("Total", "currency string", '"EUR"', apply=True)` | Adds a last parameter to the definition and the argument to every call. Without `apply`, it only returns the diff. |
+| `graphify.move("my.ns/run", "src/my/runner.clj", apply=True)` | Moves one top-level definition to another file, also a new one. Every use, import and require follows. |
+| `graphify.move_file("src/my/ns.clj", "src/my/core.clj", apply=True)` | Moves a file and renames its module or namespace at every use. For Clojure, the test namespace moves too. |
 | `graphify.domain(root=".")` | The domain model: services, commands, queries, events, links, schemas and findings. Writes `DOMAIN.md`. |
 
 You can name a node by its id, its label (`run()`), its bare name (`run`) or a qualified name
@@ -93,6 +98,25 @@ function in another package with the same name stays unchanged.
 The call writes nothing when a site blocks the change. Examples are a function that is passed as a
 value, not called, or a Python list that ends with `*args`, `**kwargs` or a default. In Python, pass
 `name=value` after a default. Then change the blocked sites by hand.
+
+## Move code
+
+Ask in chat, for example "move `slugify` from `app.util` to a new file `app/text.py`". The agent
+calls `graphify.move("app/util.py::slugify", "app/text.py", apply=True)`. To move a whole file, the
+agent calls `graphify.move_file("src/app/util.clj", "src/app/text/core.clj", apply=True)`.
+
+- The move works for Python, JavaScript, TypeScript, Go, Rust and Clojure.
+- Every import, require, `mod` declaration and qualified use follows the code.
+- The moved definition takes the imports that it needs.
+- For Clojure, `move_file` changes the `ns` form. It also moves the test namespace `x-test` of
+  namespace `x`. Give `tests=False` to keep the tests in place.
+- For Rust, `impl` blocks move with their type. A private item that the new module needs becomes
+  `pub(crate)`. `notes` lists these changes.
+
+The result has `diff`, `created`, `deleted`, `renames`, `notes` and `conflicts`. The call writes
+nothing when a conflict blocks the move. Examples are a name that the target file already defines,
+a target file that exists, or an import cycle. Without `apply=True`, the call is a preview. A
+written move updates the graph and runs the project check, as `rename` does.
 
 ## Domain flows
 

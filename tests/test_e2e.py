@@ -315,3 +315,67 @@ def test_real_add_parameter_conflict_writes_nothing(tmp_path):
     assert not blocked.applied and len(blocked.conflicts) == 2
     assert "Nothing was written" in str(blocked)
     assert (tmp_path / "jobs.py").read_text().startswith("def job(a, b=1):")
+
+
+def _write(root, files):
+    for name, body in files.items():
+        (root / name).parent.mkdir(parents=True, exist_ok=True)
+        (root / name).write_text(body, encoding="utf-8")
+
+
+def test_real_move_definition_in_python_and_typescript(tmp_path):
+    _write(
+        tmp_path,
+        {
+            "app/__init__.py": "",
+            "app/util.py": "import re\n\n\ndef slugify(s):\n    return re.sub(r'\\W+', '-', s)\n\n\ndef keep():\n    return 1\n",
+            "app/main.py": "from app.util import keep, slugify\n\n\ndef run():\n    return slugify('a b'), keep()\n",
+            "web/util.ts": "export function formatName(n: string): string {\n  return n.trim();\n}\n",
+            "web/main.ts": "import { formatName } from './util';\n\nexport const a = formatName(' x ');\n",
+        },
+    )
+    tools = GraphifyTools(workspace_root=lambda: str(tmp_path))
+    assert tools.build(cluster=False, timeout_s=600).nodes
+    preview = tools.move("app/util.py::slugify", "app/text.py")
+    assert not preview.applied and not preview.conflicts and preview.created == ("app/text.py",)
+    assert "--- /dev/null" in preview.diff and not (tmp_path / "app/text.py").exists()  # a preview writes nothing
+    done = tools.move("app/util.py::slugify", "app/text.py", apply=True)
+    assert done.applied and done.check.endswith(": passed")
+    text = (tmp_path / "app/text.py").read_text(encoding="utf-8")
+    assert "import re" in text and "def slugify(s):" in text
+    assert "def slugify" not in (tmp_path / "app/util.py").read_text(encoding="utf-8")
+    assert "from app.text import slugify" in (tmp_path / "app/main.py").read_text(encoding="utf-8")
+    moved = tools.move("formatName()", "web/names.ts", apply=True)
+    assert moved.applied and "web/names.ts" in moved.created
+    assert "from './names'" in (tmp_path / "web/main.ts").read_text(encoding="utf-8")
+
+
+def test_real_move_file_moves_the_clojure_test_namespace(tmp_path):
+    _write(
+        tmp_path,
+        {
+            "src/app/util.clj": '(ns app.util)\n\n(defn shout [s] (str s "!"))\n',
+            "src/app/core.clj": '(ns app.core\n  (:require [app.util :as util]))\n\n(defn run [] (util/shout "hi"))\n',
+            "test/app/util_test.clj": (
+                '(ns app.util-test\n  (:require [app.util :as util]))\n\n(defn check [] (util/shout "t"))\n'
+            ),
+        },
+    )
+    tools = GraphifyTools(workspace_root=lambda: str(tmp_path))
+    assert tools.build(cluster=False, timeout_s=600).nodes
+    done = tools.move_file("src/app/util.clj", "src/app/text/core.clj", apply=True, check=False)
+    assert done.applied and "app.util-test -> app.text.core-test" in done.renames
+    assert set(done.deleted) == {"src/app/util.clj", "test/app/util_test.clj"}
+    assert (tmp_path / "src/app/text/core.clj").read_text(encoding="utf-8").startswith("(ns app.text.core)")
+    tested = (tmp_path / "test/app/text/core_test.clj").read_text(encoding="utf-8")
+    assert tested.startswith("(ns app.text.core-test\n  (:require [app.text.core :as util]))")
+    assert "[app.text.core :as util]" in (tmp_path / "src/app/core.clj").read_text(encoding="utf-8")
+
+
+def test_real_move_conflict_writes_nothing(tmp_path):
+    _write(tmp_path, {"a.py": "def job():\n    return 1\n", "b.py": "def job():\n    return 2\n"})
+    tools = GraphifyTools(workspace_root=lambda: str(tmp_path))
+    assert tools.build(cluster=False, timeout_s=600).nodes
+    blocked = tools.move("a.py::job", "b.py", apply=True)
+    assert not blocked.applied and blocked.conflicts and "Nothing was written" in str(blocked)
+    assert (tmp_path / "a.py").read_text() == "def job():\n    return 1\n"
