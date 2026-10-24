@@ -217,11 +217,38 @@ def test_environment_token_goes_only_to_the_configured_server(hosted, project, m
         with pytest.raises(kbc.KBRequestError, match="kb_connect") as error:
             tools.kb_search("query", url=other.url)
         assert error.value.status == 401
-        with pytest.raises(kbc.KBRequestError, match=f"GRAPHIFY_KB_TOKEN goes only to {hosted}[.] Give token="):
+        with pytest.raises(
+            kbc.KBRequestError, match=f"The token in GRAPHIFY_KB_TOKEN goes only to {hosted}[.] Give token="
+        ):
             tools.kb_connect(other.url)
         monkeypatch.setenv("GRAPHIFY_KB_URL", "ftp://kb.example.com")
         with pytest.raises(ValueError, match="GRAPHIFY_KB_URL: ftp://kb.example.com is not an http"):
             GraphifyTools(workspace_root=lambda: str(project)).kb_search("query")
+    finally:
+        other.shutdown()
+        other.server_close()
+
+
+def test_settings_pair_their_server_and_token(hosted, project, monkeypatch):
+    other = _start(project, token=TOKEN)
+    saved = {"url": hosted + "/", "token": f" {TOKEN} "}
+    try:
+        # A project file can change the environment. Settings win, and their token never goes to another server.
+        monkeypatch.setenv("GRAPHIFY_KB_URL", other.url)
+        tools = GraphifyTools(workspace_root=lambda: str(project), kb_settings=lambda: (saved["url"], saved["token"]))
+        assert tools.kb_search("query").hits
+        assert tools.kb_connect().url == hosted
+        with pytest.raises(kbc.KBRequestError, match=f"The token in Settings goes only to {hosted}[.] Give token="):
+            tools.kb_connect(other.url)
+        # Without a server in Settings, their token stays unused, also for the server in the environment.
+        saved["url"] = ""
+        fresh = GraphifyTools(workspace_root=lambda: str(project), kb_settings=lambda: (saved["url"], saved["token"]))
+        with pytest.raises(kbc.KBRequestError, match="needs a token. Give token=") as error:
+            fresh.kb_connect()
+        assert error.value.status == 401 and TOKEN not in str(error.value)
+        saved["url"] = "ftp://kb.example.com"
+        with pytest.raises(ValueError, match="graphify_kb_url: ftp://kb.example.com is not an http"):
+            fresh.kb_search("query")
     finally:
         other.shutdown()
         other.server_close()

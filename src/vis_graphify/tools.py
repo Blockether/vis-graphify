@@ -722,6 +722,7 @@ class GraphifyTools:
         kb_actor: str = "agent",
         kb_ask_token: Callable[[str, Callable[[str], str | None]], str | None] | None = None,
         kb_secret: Callable[[str], str] | None = None,
+        kb_settings: Callable[[], tuple[str, str]] | None = None,
     ):
         self._workspace_root = workspace_root or os.getcwd
         self._run = runner or subprocess.run
@@ -734,6 +735,8 @@ class GraphifyTools:
         self._kb_ask_token = kb_ask_token
         self._kb_secret = kb_secret
         self._kb_tokens: dict[str, str] = {}
+        # The server and token text that the person saved in Settings; empty text means not set.
+        self._kb_settings = kb_settings
 
     def _root(self, root: str) -> Path:
         path = Path(root).expanduser()
@@ -1235,14 +1238,26 @@ class GraphifyTools:
             truncated=len(raw) > limit,
         )
 
-    def _kb_configured(self) -> tuple[str, str | None]:
-        """The configured server, `$GRAPHIFY_KB_URL` or else the default, and its token `$GRAPHIFY_KB_TOKEN`."""
+    def _kb_configured(self) -> tuple[str, str | None, str]:
+        """The configured server, its token and the source of that token.
+
+        The server in Settings wins over `$GRAPHIFY_KB_URL`, else the default serves. A token goes only
+        with the server of its own source: a project file that changes `$GRAPHIFY_KB_URL` never gets the
+        token from Settings.
+        """
+        saved_url, saved_token = self._kb_settings() if self._kb_settings else ("", "")
+        if saved_url.strip():
+            try:
+                url = kb.normalize_url(saved_url.strip())
+            except ValueError as error:
+                raise ValueError(f"graphify_kb_url: {error}") from None
+            return url, saved_token.strip() or None, "Settings"
         text = os.environ.get("GRAPHIFY_KB_URL", "").strip()
         try:
             url = kb.normalize_url(text) if text else kb.DEFAULT_URL
         except ValueError as error:
             raise ValueError(f"GRAPHIFY_KB_URL: {error}") from None
-        return url, os.environ.get("GRAPHIFY_KB_TOKEN", "").strip() or None
+        return url, os.environ.get("GRAPHIFY_KB_TOKEN", "").strip() or None, "GRAPHIFY_KB_TOKEN"
 
     def _kb(self, url: str | None, timeout_s: float = 60.0) -> kb.KBClient:
         """A client for `url`, else the server of kb_serve or kb_connect, else the configured server.
@@ -1250,7 +1265,7 @@ class GraphifyTools:
         The token is the one that kb_serve or kb_connect has for that server. The configured token
         goes only to the configured server, so a `url` that a call names never gets it.
         """
-        configured, configured_token = self._kb_configured()
+        configured, configured_token, _ = self._kb_configured()
         target = kb.normalize_url(url or self._kb_url or configured)
         token = self._kb_tokens.get(target) or (configured_token if target == configured else None)
         return kb.KBClient(url=target, token=token, actor=self._kb_actor, timeout_s=timeout_s)
@@ -1371,13 +1386,13 @@ class GraphifyTools:
 
         Args:
             url: Server address, such as `https://kb.example.com`. Without a scheme, https is used,
-                or http for this machine. None uses `$GRAPHIFY_KB_URL`.
+                or http for this machine. None uses the server in Settings, else `$GRAPHIFY_KB_URL`.
             token: The server token (its password), or a secret handle that the host can read. None uses
-                `$GRAPHIFY_KB_TOKEN` for the server in `$GRAPHIFY_KB_URL`, else the form. Prefer the form:
-                a token in the call shows in the conversation.
+                the token of the configured server, from Settings or `$GRAPHIFY_KB_TOKEN`, else the form.
+                Prefer the form: a token in the call shows in the conversation.
             timeout_s: Stop waiting for each answer after this many seconds.
         """
-        configured, configured_token = self._kb_configured()
+        configured, configured_token, source = self._kb_configured()
         base = kb.normalize_url(url) if url else configured
         # The configured token goes only to the configured server, also after its move to https.
         fallback = configured_token if base == configured else None
@@ -1400,15 +1415,15 @@ class GraphifyTools:
             if given:
                 raise kb.KBRequestError(f"The server at {base} refused the token.", 401) from None
             if client.token:
-                refused = "refused the token in GRAPHIFY_KB_TOKEN"
+                refused = f"refused the token in {source}"
             elif configured_token:
-                refused = f"needs a token. GRAPHIFY_KB_TOKEN goes only to {configured}"
+                refused = f"needs a token. The token in {source} goes only to {configured}"
             else:
                 refused = "needs a token"
             client.token = self._kb_ask(base, client)
             if not client.token:
                 raise kb.KBRequestError(
-                    f"The server at {base} {refused}. Give token=..., or set GRAPHIFY_KB_URL and GRAPHIFY_KB_TOKEN.",
+                    f"The server at {base} {refused}. Give token=..., or save the server and its token in Settings.",
                     401,
                 ) from None
             stats = client.request("GET", "/api/stats")
@@ -1449,7 +1464,7 @@ class GraphifyTools:
         Args:
             query: Plain words, not a regex.
             url: Server URL. None uses the server of the latest kb_serve or kb_connect, else the configured
-                server: `$GRAPHIFY_KB_URL` or `http://127.0.0.1:7878`.
+                server: Settings, `$GRAPHIFY_KB_URL` or `http://127.0.0.1:7878`.
             limit: Maximum count of matches.
             cls: Return only nodes of this ontology class or its subclasses, such as `concept` or `code`.
         """
@@ -1462,7 +1477,7 @@ class GraphifyTools:
         Args:
             node: Node id, or an exact label when no node has that id.
             url: Server URL. None uses the server of the latest kb_serve or kb_connect, else the configured
-                server: `$GRAPHIFY_KB_URL` or `http://127.0.0.1:7878`.
+                server: Settings, `$GRAPHIFY_KB_URL` or `http://127.0.0.1:7878`.
             limit: Maximum count of edges in each direction.
         """
         client = self._kb(url)
@@ -1491,7 +1506,7 @@ class GraphifyTools:
         Args:
             ops: The operations, in order. At most 10000.
             url: Server URL. None uses the server of the latest kb_serve or kb_connect, else the configured
-                server: `$GRAPHIFY_KB_URL` or `http://127.0.0.1:7878`.
+                server: Settings, `$GRAPHIFY_KB_URL` or `http://127.0.0.1:7878`.
         """
         if not isinstance(ops, (list, tuple)) or not ops:
             raise ValueError("ops must be a non-empty list of operation dicts.")
@@ -1521,7 +1536,7 @@ class GraphifyTools:
         Args:
             source: A file path relative to the workspace root, an http(s) URL, or the document name when `text` is set.
             url: Server URL. None uses the server of the latest kb_serve or kb_connect, else the configured
-                server: `$GRAPHIFY_KB_URL` or `http://127.0.0.1:7878`.
+                server: Settings, `$GRAPHIFY_KB_URL` or `http://127.0.0.1:7878`.
             mode: `text` or `llm`.
             title: Document title. None uses the file name or the first heading.
             tags: Document tags.
@@ -1550,7 +1565,7 @@ class GraphifyTools:
 
         Args:
             url: Server URL. None uses the server of the latest kb_serve or kb_connect, else the configured
-                server: `$GRAPHIFY_KB_URL` or `http://127.0.0.1:7878`.
+                server: Settings, `$GRAPHIFY_KB_URL` or `http://127.0.0.1:7878`.
             limit: Maximum count of returned findings. The counts stay complete.
             info: Also return info findings, such as orphan nodes.
         """
@@ -1562,7 +1577,7 @@ class GraphifyTools:
 
         Args:
             url: Server URL. None uses the server of the latest kb_serve or kb_connect, else the configured
-                server: `$GRAPHIFY_KB_URL` or `http://127.0.0.1:7878`.
+                server: Settings, `$GRAPHIFY_KB_URL` or `http://127.0.0.1:7878`.
             seq: History number of the change. None reverts the latest change that is not reverted yet.
         """
         answer = self._kb(url).request("POST", "/api/undo", {"seq": seq} if seq is not None else {})
@@ -1573,7 +1588,7 @@ class GraphifyTools:
 
         Args:
             url: Server URL. None uses the server of the latest kb_serve or kb_connect, else the configured
-                server: `$GRAPHIFY_KB_URL` or `http://127.0.0.1:7878`.
+                server: Settings, `$GRAPHIFY_KB_URL` or `http://127.0.0.1:7878`.
             path: An `.html` file name inside `graphify-out/`. None writes `graphify-out/kb.html`.
         """
         answer = self._kb(url).request("POST", "/api/publish", {"path": path} if path else {})

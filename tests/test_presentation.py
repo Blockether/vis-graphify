@@ -106,6 +106,55 @@ def test_prompt_names_the_configured_knowledge_base_server(monkeypatch):
     assert extension.prompt({}) == module.PROMPT
 
 
+def test_settings_name_the_server_and_keep_the_token_secret(monkeypatch):
+    saved = {}
+
+    class Setting:
+        def __init__(self, **spec):
+            self.spec = spec
+
+        def value(self):
+            return saved.get(self.spec["id"], self.spec["default"])
+
+    monkeypatch.setattr(vis, "Setting", Setting)
+    module, registered = _entry(monkeypatch)
+    (extension,) = registered
+    url, token = module.SETTINGS
+    # Both settings keep the default scope, global only: a project file cannot change them.
+    assert (url.spec["id"], url.spec["type"], "scopes" in url.spec) == ("graphify_kb_url", "string", False)
+    assert (token.spec["id"], token.spec["default"], token.spec["is_secret"]) == ("graphify_kb_token", "", True)
+    assert list(extension.settings) == module.SETTINGS
+    # The server in Settings wins over the environment.
+    monkeypatch.setenv("GRAPHIFY_KB_URL", "other.example.com")
+    saved.update(graphify_kb_url=" KB.example.com/ ", graphify_kb_token="t" * 20)
+    assert "The configured server is https://kb.example.com:" in extension.prompt({})
+    assert module._kb_settings() == (" KB.example.com/ ", "t" * 20)
+
+
+def test_hosts_without_string_settings_keep_the_environment(monkeypatch):
+    class Setting:
+        """A Setting of a Vis release before text settings: it has no `is_secret`."""
+
+        def __init__(self, *, id, label, default, type="boolean", description=None):
+            raise AssertionError("a host without text settings gets no declaration")
+
+    monkeypatch.setattr(vis, "Setting", Setting)
+    module, registered = _entry(monkeypatch)
+    (extension,) = registered
+    assert module.SETTINGS == [] and module._kb_settings() == ("", "")
+    monkeypatch.setenv("GRAPHIFY_KB_URL", "kb.example.com")
+    assert "The configured server is https://kb.example.com:" in extension.prompt({})
+
+
+def test_a_declaration_error_on_a_host_with_text_settings_fails_the_load(monkeypatch):
+    def refuse(**spec):
+        raise ValueError("A text setting requires a string default")
+
+    monkeypatch.setattr(vis, "Setting", refuse)
+    with pytest.raises(ValueError, match="string default"):
+        _entry(monkeypatch)
+
+
 def test_extension_registers_every_tool_with_an_activity(monkeypatch):
     module, registered = _entry(monkeypatch)
     (extension,) = registered

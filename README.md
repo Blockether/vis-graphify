@@ -26,8 +26,8 @@ namespaces, vars, `:require` aliases, cross-file calls, protocols, records and C
   [Knowledge base](#knowledge-base).
 - Your team runs a knowledge base server, and you want the agent to read and edit it: use
   `graphify.kb_connect`. See [Use a hosted knowledge base](#use-a-hosted-knowledge-base).
-- You want every session to use that server without a question for the token: set two environment
-  variables. See [Connect without the form](#connect-without-the-form).
+- You want every session to use that server without a question for the token: save it in Vis
+  Settings. See [Save the server in Settings](#save-the-server-in-settings).
 
 The graph comes from tree-sitter syntax trees. A build makes no LLM call and sends no code anywhere.
 
@@ -180,7 +180,7 @@ print(graphify.kb_publish())                       # static graphify-out/kb.html
 
 A batch in `kb_write` is one change: if one operation fails, the server applies none of them. Read
 with `kb_search` and `kb_node`. The other `kb_*` calls use the server of the latest `kb_serve` or
-`kb_connect`, else the [configured server](#connect-without-the-form). To use another server in one
+`kb_connect`, else the [configured server](#save-the-server-in-settings). To use another server in one
 call, give `url`. `kb_stop()` stops a server that
 `kb_serve` started. The [knowledge base guide](https://github.com/Blockether/graphify/blob/v8/docs/kb.md)
 describes the HTTP API and the ontology.
@@ -198,7 +198,7 @@ print(graphify.kb_search("billing"))
 When the server needs a token, Vis shows a masked form in the TUI or the Companion. The form checks
 the token with the server before it closes. The token stays in memory. It does not go into the
 conversation, the logs or a result. A new session asks again. To connect without the form, see
-[Connect without the form](#connect-without-the-form).
+[Save the server in Settings](#save-the-server-in-settings).
 
 - You can also give `token=`, but then the token shows in the conversation.
 - A URL without a scheme uses https, for example `kb.example.com`. A loopback address, such as
@@ -208,10 +208,30 @@ conversation, the logs or a result. A new session asks again. To connect without
 - `kb_ingest` sends the file content, so you can add files from your machine. `kb_publish` writes
   `kb.html` on the server machine.
 
+#### Save the server in Settings
+
+Save the server and its token once in Vis Settings. Then every session uses them without
+`kb_connect` and without the form:
+
+1. In Settings, open **Extensions** in the **Tools** section, then the **vis-graphify** group.
+2. In **Knowledge base server**, type the address, for example `https://kb.example.com`, and save.
+3. In **Knowledge base token**, select **Set**, type the token and save.
+
+Settings shows the token only as **Saved** or **Not set**. Vis keeps it in `~/.vis/state.yml`, which
+only your user account can read. graphify sends this token only to the server in **Knowledge base
+server**. A project file cannot change these two settings. They win over the environment variables
+in the next section.
+
+Save both settings. A saved token without a saved server has no effect: graphify then uses the
+server and the token of the environment variables.
+
+If your Vis does not show these settings, it is older than this feature. Then use the environment
+variables.
+
 #### Connect without the form
 
-To connect without `kb_connect` and without the form, give the server and its token in two
-environment variables:
+To connect without `kb_connect`, without the form and without Settings, give the server and its
+token in two environment variables:
 
 - `GRAPHIFY_KB_URL` is the server address. Without it, graphify uses `http://127.0.0.1:7878`. The
   `kb_*` calls use this server until a `kb_serve` or `kb_connect` call names another server.
@@ -245,7 +265,7 @@ After a change in a file, run `/reload`.
 The files of a project win over your own configuration: its `vis.yml` over `~/.vis/config.yml`, and
 its `.env` over the process environment. So a project can point `GRAPHIFY_KB_URL` at another
 server, and graphify then sends your token there. Before you open a project that you did not
-write, check that it does not set `GRAPHIFY_KB_URL`.
+write, check that it does not set `GRAPHIFY_KB_URL`. Settings do not have this risk.
 
 #### Host the server
 

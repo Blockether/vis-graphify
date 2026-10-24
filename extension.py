@@ -1,5 +1,6 @@
 """Vis entrypoint. The tools themselves live in vis_graphify."""
 
+import inspect
 import os
 from typing import Literal
 
@@ -9,7 +10,7 @@ from vis_graphify import presentation
 from vis_graphify.kb import KBSearchResult, normalize_url
 from vis_graphify.tools import GraphifyTools, HubsResult, ImpactResult, ReferencesResult, SearchResult
 
-VERSION = "0.11.1"
+VERSION = "0.12.0"
 
 _Tag = Literal["observation", "mutation"]
 
@@ -134,10 +135,48 @@ Knowledge base (ontology, documents, undoable edits, admin UI in the browser), s
   graphify.kb_ingest("docs/spec.pdf", mode="text"|"llm") · kb_undo() · kb_publish() (static kb.html)"""
 
 
-def _prompt(env) -> str:
-    """The prompt, with the configured knowledge base server when `$GRAPHIFY_KB_URL` names a valid one."""
+def _has_secret_settings() -> bool:
+    """Whether `vis.Setting` takes `is_secret`. Text and secret settings came with it."""
     try:
-        url = normalize_url(os.environ.get("GRAPHIFY_KB_URL", ""))
+        parameters = inspect.signature(vis.Setting).parameters.values()
+    except (AttributeError, TypeError, ValueError):
+        return False
+    return any(p.name == "is_secret" or p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters)
+
+
+# On a Vis without text settings, the environment alone names the server.
+if _has_secret_settings():
+    KB_URL = vis.Setting(
+        id="graphify_kb_url",
+        label="Knowledge base server",
+        description="The hosted server for the kb_* calls, such as https://kb.example.com.",
+        type="string",
+        default="",
+    )
+    KB_TOKEN = vis.Setting(
+        id="graphify_kb_token",
+        label="Knowledge base token",
+        description="The token of the knowledge base server. It goes only to that server.",
+        type="string",
+        default="",
+        is_secret=True,
+    )
+    SETTINGS = [KB_URL, KB_TOKEN]
+else:
+    SETTINGS = []
+
+
+def _kb_settings() -> tuple[str, str]:
+    """The server and token text that Settings hold, or empty text on a host without string settings."""
+    if not SETTINGS:
+        return "", ""
+    return str(KB_URL.value() or ""), str(KB_TOKEN.value() or "")
+
+
+def _prompt(env) -> str:
+    """The prompt, with the configured knowledge base server when Settings or `$GRAPHIFY_KB_URL` name a valid one."""
+    try:
+        url = normalize_url(_kb_settings()[0].strip() or os.environ.get("GRAPHIFY_KB_URL", ""))
     except ValueError:
         return PROMPT
     return f"{PROMPT}\n  The configured server is {url}: the kb_* calls use it without kb_connect, until kb_serve or kb_connect names another server."
@@ -177,11 +216,17 @@ vis.register_extension(
         alias="graphify",
         symbols=[
             vis.Symbol(
-                GraphifyTools(workspace_root=vis.workspace_root, kb_ask_token=_ask_kb_token, kb_secret=_kb_secret),
+                GraphifyTools(
+                    workspace_root=vis.workspace_root,
+                    kb_ask_token=_ask_kb_token,
+                    kb_secret=_kb_secret,
+                    kb_settings=_kb_settings,
+                ),
                 name="graphify",
             )
         ],
         prompt=_prompt,
+        settings=SETTINGS,
         env=["GRAPHIFY_KB_URL", "GRAPHIFY_KB_TOKEN"],
     )
 )
