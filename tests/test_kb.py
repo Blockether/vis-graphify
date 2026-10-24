@@ -787,16 +787,24 @@ def test_snapshot_export_refuses_unsafe_files(tmp_path):
     graph = {"path": "graph.json", "json": {"nodes": [{"id": "a"}], "links": []}}
     with pytest.raises(kbc.KBRequestError, match="sent no store export"):
         _kb_write_export(tmp_path / "a", {"files": []})
-    for bad in ("../escape.json", "/etc/x", "kb\\x", "c:x", ""):
+    for bad in ("../escape.json", "/etc/x", "kb\\x", "c:x", "", "kb/.lock"):
         with pytest.raises(kbc.KBRequestError, match="unsafe path"):
             _kb_write_export(tmp_path / "b", export(graph, {"path": bad, "text": "x"}))
+    # Only the files of a store export go in: no store file, script or other folder.
+    for other in ("kb/store.sqlite", "kb/store.json", "run.sh", "kb/documents/d1/a.png"):
+        with pytest.raises(kbc.KBRequestError, match="does not hold"):
+            _kb_write_export(tmp_path / "b", export(graph, {"path": other, "text": "x"}))
+    assert not (tmp_path / "b").exists()
     with pytest.raises(kbc.KBRequestError, match="has no graph.json"):
         _kb_write_export(tmp_path / "c", export({"path": "kb/overlay.json", "json": {}}))
     meta = {"path": "kb/documents/d1/meta.json", "json": {"title": "D"}}
-    asset = {"path": "kb/documents/d1/a.png", "base64": "aGk="}
-    counts = _kb_write_export(tmp_path / "d", export(graph, meta, asset))
+    asset = {"path": "kb/documents/d1/assets/a.png", "base64": "aGk="}
+    overlay = {"path": "kb/overlay.json", "json": {"version": 1, "nodes": {"kb:n": {"id": "kb:n", "label": "N"}}}}
+    counts = _kb_write_export(tmp_path / "d", export(graph, meta, asset, overlay))
     assert counts == {"nodes": 1, "edges": 0, "documents": 1, "assets": 1}
-    assert (tmp_path / "d" / "kb" / "documents" / "d1" / "a.png").read_bytes() == b"hi"
+    assert (tmp_path / "d" / "kb" / "documents" / "d1" / "assets" / "a.png").read_bytes() == b"hi"
+    # The edits go straight into the store of the copy.
+    assert (tmp_path / "d" / "kb" / "store.sqlite").is_file() and not (tmp_path / "d" / "kb" / "overlay.json").exists()
 
 
 def test_publish_writes_the_page_of_the_local_store_with_its_unsaved_changes(project):

@@ -245,12 +245,15 @@ def test_private_marks_unexported_definitions(tmp_path):
 
 
 def _store(root, name="store.sqlite"):
-    """Give the project a knowledge base store, as `graphify kb` leaves it (`overlay.json`: an import)."""
+    """Give the project a knowledge base store, as `graphify kb` leaves it.
+
+    `store.json` names another store backend, and `overlay.json` is the import of an older graphify.
+    """
     (root / "graphify-out" / "kb").mkdir()
     (root / "graphify-out" / "kb" / name).write_text("{}")
 
 
-@pytest.mark.parametrize("name", ["store.sqlite", "overlay.json"])
+@pytest.mark.parametrize("name", ["store.sqlite", "store.json", "overlay.json"])
 def test_a_saved_store_has_knowledge(project, name):
     graph = project.resolve() / "graphify-out" / "graph.json"
     assert not _kb_has_knowledge(graph)

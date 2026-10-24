@@ -346,11 +346,18 @@ class KBClient:
             )
             raise KBRequestError(f"No knowledge base server answers at {self.url} ({reason}). {hint}") from None
         try:
-            answer = json.loads(raw or b"{}")
+            answer = _parse(raw or b"{}")
         except ValueError:
             raise KBRequestError(f"{method} {path}: the answer is not JSON.") from None
         self.changes = tuple(int(part) for part in changes.split(",") if part.strip().isdigit())
         return answer if isinstance(answer, dict) else {"value": answer}
+
+
+def _parse(raw: bytes) -> Any:
+    """The JSON of an answer. The parser of graphify runs orjson: a store export has hundreds of MB."""
+    from graphify.kb_store import loads
+
+    return loads(raw)
 
 
 def _unpack(raw: bytes, headers: Any) -> bytes:

@@ -23,7 +23,7 @@ import threading
 import time
 from collections import Counter
 from dataclasses import dataclass
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Annotated, Any, Callable
 from urllib.parse import urlsplit
 
@@ -603,12 +603,13 @@ def _kb_registry(graph: Path) -> dict | None:
 
 
 def _kb_store_saved(graph: Path) -> bool:
-    """True when the store of a graph has saved edits: `kb/store.sqlite`, or the `kb/overlay.json` of an import.
+    """True when the store of a graph has saved edits: `kb/store.sqlite`, `kb/store.json` or `kb/overlay.json`.
 
-    graphify moves `kb/overlay.json` into `kb/store.sqlite` when it next opens the store.
+    `kb/store.json` names a store backend other than SQLite. `kb/overlay.json` is an import of an older
+    graphify, which moves it into the store when it next opens the store.
     """
     store = graph.parent / "kb"
-    return (store / "store.sqlite").is_file() or (store / "overlay.json").is_file()
+    return any((store / name).is_file() for name in ("store.sqlite", "store.json", "overlay.json"))
 
 
 def _kb_has_knowledge(graph: Path) -> bool:
@@ -659,38 +660,21 @@ def _kb_store_token(url: str) -> str | None:
 
 
 def _kb_write_export(folder: Path, answer: dict) -> dict[str, int]:
-    """Write the files of a `/api/export` answer into `folder`. Return the counts of the copy.
+    """Write a `/api/export` answer into `folder` as a store that opens at once. Return the counts of the copy.
 
-    Each path must stay inside `folder`. Raises KBRequestError for an answer that is not an export.
+    graphify writes the files and puts the edits straight into the store of the copy, so the first read
+    does not move them in. Each path must be a file of a store export. Raises KBRequestError for an answer
+    that is not an export.
     """
-    files = answer.get("files")
-    if answer.get("format") != KB_EXPORT_FORMAT or not isinstance(files, list):
+    if answer.get("format") != KB_EXPORT_FORMAT or not isinstance(answer.get("files"), list):
         raise kb.KBRequestError("The server sent no store export. It needs graphify v0.9.93-blockether.17 or later.")
-    counts = {"nodes": 0, "edges": 0, "documents": 0, "assets": 0}
-    for item in files:
-        name = str(item.get("path") or "") if isinstance(item, dict) else ""
-        parts = PurePosixPath(name).parts
-        if not parts or name.startswith("/") or "\\" in name or ":" in name or ".." in parts:
-            raise kb.KBRequestError(f"The export names an unsafe path: {name!r}.")
-        target = folder.joinpath(*parts)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        if "json" in item:
-            target.write_text(json.dumps(item["json"], ensure_ascii=False), encoding="utf-8")
-        elif "text" in item:
-            target.write_text(str(item["text"]), encoding="utf-8")
-        elif "base64" in item:
-            target.write_bytes(base64.b64decode(str(item["base64"])))
-            counts["assets"] += 1
-        else:
-            raise kb.KBRequestError(f"The export has no content for {name}.")
-        if name == g.GRAPH_FILE and isinstance(item.get("json"), dict):
-            counts["nodes"] = len(item["json"].get("nodes") or ())
-            counts["edges"] = len(item["json"].get("links", item["json"].get("edges")) or ())
-        elif parts[:2] == ("kb", "documents") and len(parts) == 4 and parts[3] == "meta.json":
-            counts["documents"] += 1
-    if not (folder / g.GRAPH_FILE).is_file():
-        raise kb.KBRequestError("The export has no graph.json.")
-    return counts
+    from graphify.kb import KBError, import_export
+
+    try:
+        return import_export(folder, answer)
+    except KBError as error:
+        message = str(error)
+        raise kb.KBRequestError(f"{message[:1].upper()}{message[1:]}.") from None
 
 
 def _listing(header: str, rows, field: str, limit: int = 40) -> str:
