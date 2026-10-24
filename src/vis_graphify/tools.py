@@ -531,9 +531,6 @@ KB_CHECK_SECONDS = 30.0
 KB_EXPORT_FORMAT = "graphify-kb-export"
 """The `format` of a `GET /api/export` answer. graphify v0.9.93-blockether.17 added that route."""
 
-KB_STORE_ENV = "GRAPHIFY_KB_STORE"
-"""Names the store backend of a new store for graphify. It also confirms a `module:attr` backend that a store names."""
-
 
 @dataclass
 class _KBSession:
@@ -666,9 +663,8 @@ def _kb_write_export(folder: Path, answer: dict) -> dict[str, int]:
     """Write a `/api/export` answer into `folder` as a store that opens at once. Return the counts of the copy.
 
     graphify writes the files and puts the edits straight into the store of the copy, so the first read
-    does not move them in. Each path must be a file of a store export. Raises KBRequestError for an answer
-    that is not an export. A copy always uses SQLite, so this interpreter loads no store code that
-    `$GRAPHIFY_KB_STORE` names.
+    does not move them in. The copy uses SQLite, also when `$GRAPHIFY_KB_STORE` names another backend.
+    Each path must be a file of a store export. Raises KBRequestError for an answer that is not an export.
     """
     if answer.get("format") != KB_EXPORT_FORMAT or not isinstance(answer.get("files"), list):
         raise kb.KBRequestError("The server sent no store export. It needs graphify v0.9.93-blockether.17 or later.")
@@ -899,19 +895,14 @@ def graphify_command() -> list[str]:
 
 
 def _child_env() -> dict[str, str]:
-    """The environment for graphify: no host Python paths that could shadow its packages."""
-    env = {k: v for k, v in os.environ.items() if k not in ("PYTHONPATH", "PYTHONHOME")}
+    """The environment for graphify: no host Python paths that could shadow its packages.
+
+    It also has no `GRAPHIFY_KB_STORE`, so each new store of this extension uses SQLite. Another store
+    backend is for a server that you host with graphify itself.
+    """
+    env = {k: v for k, v in os.environ.items() if k not in ("PYTHONPATH", "PYTHONHOME", "GRAPHIFY_KB_STORE")}
     env["PYTHONIOENCODING"] = "utf-8"
     return env
-
-
-def _kb_cwd(graph: Path) -> str:
-    """The working folder of a `graphify kb` child: the project of `graphify-out`, else the store folder.
-
-    `python -m graphify` imports a `module:attr` store backend from this folder.
-    """
-    out = graph.parent
-    return str(out.parent if out.name == g.GRAPH_DIR else out)
 
 
 def _ignore_output(out: Path) -> None:
@@ -1029,7 +1020,6 @@ class GraphifyTools:
         kb_ask_token: Callable[[str, Callable[[str], str | None]], str | None] | None = None,
         kb_settings: Callable[[], tuple[str, str]] | None = None,
         kb_session: Callable[[], str] | None = None,
-        kb_store: Callable[[], str] | None = None,
     ):
         self._workspace_root = workspace_root or os.getcwd
         self._run = runner or subprocess.run
@@ -1047,10 +1037,6 @@ class GraphifyTools:
         self._kb_ask_token = kb_ask_token
         # The server and token text that the person saved in Settings; empty text means not set.
         self._kb_settings = kb_settings
-        # The store backend that the person saved in Settings; empty text means not set.
-        self._kb_store = kb_store
-        # The store backends that serve(store=...) gave, by graph file. The kb children of a store get its backend.
-        self._kb_backends: dict[Path, str] = {}
 
     def _root(self, root: str) -> Path:
         path = Path(root).expanduser()
@@ -1833,19 +1819,6 @@ class GraphifyTools:
             running = self._kb_running(source)
             return running[0] if running else self._kb_start(source)[0]
 
-    def _kb_env(self, graph: Path | None = None) -> dict[str, str]:
-        """The environment of a `graphify kb` child for the store of `graph`.
-
-        The backend that `serve(store=...)` gave the store wins. Then comes the backend in Settings, then
-        `$GRAPHIFY_KB_STORE`.
-        """
-        env = _child_env()
-        store = self._kb_backends.get(graph.resolve(), "") if graph is not None else ""
-        store = store or (self._kb_store() if self._kb_store else "").strip()
-        if store:
-            env[KB_STORE_ENV] = store
-        return env
-
     def _kb_start(
         self,
         source: _KBSource,
@@ -1853,11 +1826,8 @@ class GraphifyTools:
         host: str = "127.0.0.1",
         read_only: bool = False,
         timeout_s: float = 120.0,
-        store: str | None = None,
     ) -> tuple[str, dict, dict, str]:
         """Start `graphify kb serve` for a store. Returns the URL, the health and stats answers and the log path.
-
-        `store` names the store backend with `--store`; graphify refuses it when the store keeps another backend.
 
         The entry `kb-serve.json` in the output folder of the store names the server. The server and the entry
         outlive the gateway, so a later session uses the same server. A snapshot gets a read-only server.
@@ -1883,16 +1853,14 @@ class GraphifyTools:
         argv = graphify_command() + ["kb", "serve", str(graph), "--host", host, "--port", str(chosen)]
         if read_only:
             argv.append("--read-only")
-        if store:
-            argv += ["--store", store]
-        env = self._kb_env(graph)
+        env = _child_env()
         if kb.is_loopback_url(url):
             # A loopback server needs no token, so the token of a hosted server stays out of it.
             env.pop("GRAPHIFY_KB_TOKEN", None)
         with open(log, "wb") as handle:
             process = self._spawn(
                 argv,
-                cwd=_kb_cwd(graph),
+                cwd=str(out.parent if out.name == g.GRAPH_DIR else out),
                 env=env,
                 stdin=subprocess.DEVNULL,
                 stdout=handle,
@@ -1910,8 +1878,6 @@ class GraphifyTools:
             time.sleep(0.2)
         self._kb_procs[source.key] = process
         entry = {"url": url, "pid": process.pid, "graph": str(graph), "read_only": read_only}
-        if store:
-            entry["store"] = store
         _kb_write_json(out / KB_REGISTRY, entry)
         self._kb_checked[source.key] = (url, time.monotonic())
         return url, *running, str(log)
@@ -1948,9 +1914,7 @@ class GraphifyTools:
             ids = [node_id for op in ops[start : start + KB_MOVE_PAIRS] for node_id in (op["from"], op["to"])]
             argv = graphify_command() + ["kb", "move", *ids, "--graph", str(graph_file), "--json"]
             try:
-                done = self._run(
-                    argv, cwd=str(path), env=self._kb_env(graph_file), capture_output=True, text=True, timeout=300
-                )
+                done = self._run(argv, cwd=str(path), env=_child_env(), capture_output=True, text=True, timeout=300)
             except subprocess.TimeoutExpired:
                 return _kb_outcome(place, results, "graphify kb move did not finish in 300 s")
             except OSError as error:
@@ -1987,19 +1951,13 @@ class GraphifyTools:
         read_only: bool | None = None,
         stop: bool = False,
         timeout_s: int = 120,
-        store: str | None = None,
     ) -> kb.KBServer:
         """Start the server of a knowledge store on this machine, or use the one that runs. Gives its admin UI URL.
 
         The server is `graphify kb serve`: an HTTP API and an admin UI in the browser. People and agents
         edit the same store there, and each change is undoable. The knowledge calls start this server
-        themselves, so call serve to give a person the URL, or to choose the port, the address, read-only
-        mode or the store backend. The server keeps running after the session. `stop=True` stops it, also
-        after a gateway restart.
-
-        To keep a store in your own Python code, write a `graphify.kb_store.KBStore` subclass, or a function
-        that returns one, in a file of the project. Then give `store="module:attr"` before the first knowledge
-        call of a new store.
+        themselves, so call serve to give a person the URL, or to choose the port, the address or read-only
+        mode. The server keeps running after the session. `stop=True` stops it, also after a gateway restart.
 
         Args:
             source: `local` for the store of the workspace root, or the path of another store or snapshot.
@@ -2010,10 +1968,6 @@ class GraphifyTools:
             read_only: Refuse all writes. None keeps the mode of the running server. A snapshot is always read-only.
             stop: Stop the server of the store instead. It writes the pending changes first.
             timeout_s: Stop waiting for a new server after this many seconds.
-            store: The store backend: `module:attr` of your code, which graphify imports from the project root,
-                `sqlite`, `memory` or an entry point of `graphify.kb_stores`. A new store uses it. An existing
-                store must use it already. The later calls give it to graphify for this store too. None uses
-                the saved backend of the store, else Settings, else `$GRAPHIFY_KB_STORE`, else SQLite.
         """
         if stop:
             return self._kb_stop(source)
@@ -2028,16 +1982,8 @@ class GraphifyTools:
                 f"serve starts a server on this machine, and {host} is not one of its addresses. "
                 "Give a server elsewhere as source=... to the other calls."
             )
-        store = (store or "").strip() or None
         if target.kind == "snapshot":
-            if store:
-                raise ValueError("A snapshot is a SQLite copy, so it takes no store backend.")
             read_only = True
-        if store:
-            from graphify.kb_store import resolve_store_name
-
-            # This reads only the saved backend name, so no store code loads in this process.
-            resolve_store_name(target.graph.parent / "kb", store)
         with self._kb_lock:
             running = self._kb_running(target)
             if running:
@@ -2050,22 +1996,16 @@ class GraphifyTools:
                     asked.append(f"host {host}")
                 if read_only is not None and bool(read_only) != bool(health.get("read_only")):
                     asked.append("read-only mode" if read_only else "writes")
-                entry = _kb_registry(target.graph) or {}
-                if store and store != entry.get("store") and not _kb_store_saved(target.graph):
-                    asked.append(f"the store {store}")
                 if asked:
                     raise RuntimeError(
                         f"{target.name} has a server at {url} already. Stop it with "
                         f"graphify.serve({target.name!r}, stop=True), then start it with {' and '.join(asked)}."
                     )
-                if store:
-                    self._kb_backends[target.graph.resolve()] = store
-                return kb.server(health, stats, url, started=False, pid=entry.get("pid"), source=target.name)
+                pid = (_kb_registry(target.graph) or {}).get("pid")
+                return kb.server(health, stats, url, started=False, pid=pid, source=target.name)
             url, health, stats, log = self._kb_start(
-                target, port=port, host=host or "127.0.0.1", read_only=bool(read_only), timeout_s=timeout_s, store=store
+                target, port=port, host=host or "127.0.0.1", read_only=bool(read_only), timeout_s=timeout_s
             )
-            if store:
-                self._kb_backends[target.graph.resolve()] = store
         pid = self._kb_procs[target.key].pid
         return kb.server(health, stats, url, started=True, pid=pid, log=log, source=target.name)
 
@@ -2387,7 +2327,7 @@ class GraphifyTools:
             argv += ["--name", title]
         try:
             done = self._run(
-                argv, cwd=_kb_cwd(graph), env=self._kb_env(graph), capture_output=True, text=True, timeout=timeout_s
+                argv, cwd=str(graph.parent), env=_child_env(), capture_output=True, text=True, timeout=timeout_s
             )
         except subprocess.TimeoutExpired as error:
             raise TimeoutError(f"graphify kb export did not finish in {timeout_s} s.") from error

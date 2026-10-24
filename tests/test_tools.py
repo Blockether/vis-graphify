@@ -12,6 +12,7 @@ from vis_graphify.tools import (
     Node,
     RenameEdit,
     RenameResult,
+    _child_env,
     _kb_has_knowledge,
     graphify_command,
 )
@@ -287,6 +288,14 @@ def test_moved_nodes_go_to_the_project_store(project, monkeypatch):
         "--json",
     ]
     assert kwargs["cwd"] == str(root) and kwargs["timeout"] == 300 and "PYTHONPATH" not in kwargs["env"]
+
+
+def test_graphify_children_keep_the_stores_in_sqlite(monkeypatch):
+    # GRAPHIFY_KB_STORE is for a server that you host with graphify. The stores of this extension keep SQLite.
+    monkeypatch.setenv("GRAPHIFY_KB_STORE", "memory")
+    monkeypatch.setenv("PYTHONPATH", "/elsewhere")
+    env = _child_env()
+    assert "GRAPHIFY_KB_STORE" not in env and "PYTHONPATH" not in env and env["PYTHONIOENCODING"] == "utf-8"
 
 
 def _timeout():

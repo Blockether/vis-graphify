@@ -90,7 +90,7 @@ _bind(
     "serve",
     "Serve knowledge base",
     presentation.serve,
-    ("source", "port", "host", "read_only", "stop", "timeout_s", "store"),
+    ("source", "port", "host", "read_only", "stop"),
     tag="mutation",
     show_start=True,
 )
@@ -144,8 +144,7 @@ Also: graphify.explain(node) · shortest_path(a, b) · search(pattern) · hubs()
 Knowledge (ontology, notes, documents) is part of the same graph: search and explain return it next to the code. The code itself always comes from the local graph.
 A knowledge source is "local" (the store in graphify-out/), a store or snapshot folder, or a server URL. A call without source=... uses the configured server, else the local store. A server asks the person for its token in a masked form; never ask for it in chat.
   graphify.write([{"op": "add_node", "label": "Billing", "class": "concept"}, {"op": "add_edge", ...}])  one undoable change; doc("graphify.write") lists the ops · undo() reverts it
-  graphify.ingest("docs/spec.pdf", mode="text"|"llm") · validate() · snapshot(url) · publish() (static HTML) · print(graphify.serve()) gives the person the admin UI URL
-Own store backend in Python: put a KBStore subclass, or a function that returns one, in a project file. Then call graphify.serve(store="module:attr") before the first knowledge call of a new store; doc("graphify.serve") tells more."""
+  graphify.ingest("docs/spec.pdf", mode="text"|"llm") · validate() · snapshot(url) · publish() (static HTML) · print(graphify.serve()) gives the person the admin UI URL"""
 
 
 def _has_secret_settings() -> bool:
@@ -157,7 +156,7 @@ def _has_secret_settings() -> bool:
     return any(p.name == "is_secret" or p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters)
 
 
-# On a Vis without text settings, the environment alone names the server and the store backend.
+# On a Vis without text settings, the environment alone names the server.
 if _has_secret_settings():
     KB_URL = vis.Setting(
         id="graphify_kb_url",
@@ -174,14 +173,7 @@ if _has_secret_settings():
         default="",
         is_secret=True,
     )
-    KB_STORE = vis.Setting(
-        id="graphify_kb_store",
-        label="Knowledge store backend",
-        description="The backend of new knowledge stores on this machine: sqlite, memory, an entry point of graphify.kb_stores or module:attr. Empty uses $GRAPHIFY_KB_STORE, else SQLite.",
-        type="string",
-        default="",
-    )
-    SETTINGS = [KB_URL, KB_TOKEN, KB_STORE]
+    SETTINGS = [KB_URL, KB_TOKEN]
 else:
     SETTINGS = []
 
@@ -191,13 +183,6 @@ def _kb_settings() -> tuple[str, str]:
     if not SETTINGS:
         return "", ""
     return str(KB_URL.value() or ""), str(KB_TOKEN.value() or "")
-
-
-def _kb_store() -> str:
-    """The store backend text that Settings hold, or empty text on a host without string settings."""
-    if not SETTINGS:
-        return ""
-    return str(KB_STORE.value() or "")
 
 
 def _prompt(env) -> str:
@@ -246,7 +231,6 @@ vis.register_extension(
                     kb_ask_token=_ask_kb_token,
                     kb_settings=_kb_settings,
                     kb_session=_session_key,
-                    kb_store=_kb_store,
                 ),
                 name="graphify",
             )

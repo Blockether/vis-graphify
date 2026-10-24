@@ -732,7 +732,7 @@ def test_client_keeps_the_base_path_and_explains_hosted_errors():
 
 def test_snapshot_copies_a_server_into_a_read_only_local_source(project, tmp_path_factory, spawner, monkeypatch):
     remote = _start(_other_project(project, tmp_path_factory), token=TOKEN)
-    # A copy keeps SQLite, whatever backend the environment names for new stores.
+    # The store backend of a hosted server does not change the local copy: it keeps SQLite.
     monkeypatch.setenv("GRAPHIFY_KB_STORE", "memory")
     try:
         tools = GraphifyTools(
@@ -779,69 +779,6 @@ def test_snapshot_copies_a_server_into_a_read_only_local_source(project, tmp_pat
             _stop(remote)
         except OSError:
             pass
-
-
-def test_the_store_backend_in_settings_reaches_the_kb_children(project, spawner, monkeypatch):
-    monkeypatch.setenv("GRAPHIFY_KB_STORE", "memory")
-    runs = []
-
-    def run(argv, **kwargs):
-        runs.append((argv, kwargs))
-        Path(argv[argv.index("--out") + 1]).write_text("<html></html>", encoding="utf-8")
-        return subprocess.CompletedProcess(argv, 0, "", "")
-
-    saved = {"store": " sqlite "}
-    tools = GraphifyTools(
-        workspace_root=lambda: str(project), spawn=spawner, runner=run, kb_store=lambda: saved["store"]
-    )
-    tools.write([{"op": "add_node", "label": "Billing", "class": "concept"}])
-    # The backend in Settings wins over the environment, for the server and for the page export.
-    assert spawner.calls[-1][1]["env"]["GRAPHIFY_KB_STORE"] == "sqlite"
-    tools.publish()
-    ((argv, options),) = runs
-    assert argv[argv.index("kb") + 1] == "export" and options["env"]["GRAPHIFY_KB_STORE"] == "sqlite"
-    # Each child runs in the project, so that a `module:attr` backend of the project imports.
-    assert Path(spawner.calls[-1][1]["cwd"]).resolve() == Path(options["cwd"]).resolve() == project.resolve()
-    # Without a backend in Settings, the environment names it.
-    saved["store"] = ""
-    assert tools._kb_env()["GRAPHIFY_KB_STORE"] == "memory"
-    assert GraphifyTools(workspace_root=lambda: str(project))._kb_env()["GRAPHIFY_KB_STORE"] == "memory"
-
-
-def test_serve_gives_the_store_backend_of_the_call_to_the_kb_children(project, spawner, monkeypatch):
-    from vis_graphify.tools import KB_REGISTRY
-
-    monkeypatch.setenv("GRAPHIFY_KB_STORE", "memory")
-    runs = []
-
-    def run(argv, **kwargs):
-        runs.append((argv, kwargs))
-        Path(argv[argv.index("--out") + 1]).write_text("<html></html>", encoding="utf-8")
-        return subprocess.CompletedProcess(argv, 0, "", "")
-
-    tools = GraphifyTools(workspace_root=lambda: str(project), spawn=spawner, runner=run, kb_store=lambda: "sqlite")
-    assert tools.serve(store=" team_store:TeamStore ").started
-    argv = spawner.calls[-1][0]
-    assert argv[argv.index("--store") + 1] == "team_store:TeamStore"
-    assert json.loads((project / "graphify-out" / KB_REGISTRY).read_text())["store"] == "team_store:TeamStore"
-    # The backend of the call wins over Settings and the environment for the later kb children of the store.
-    tools.publish()
-    ((argv, options),) = runs
-    assert argv[argv.index("kb") + 1] == "export" and options["env"]["GRAPHIFY_KB_STORE"] == "team_store:TeamStore"
-    # The same backend uses the running server. Another backend needs a stop first.
-    assert not tools.serve(store="team_store:TeamStore").started
-    with pytest.raises(RuntimeError, match="then start it with the store memory"):
-        tools.serve(store="memory")
-
-
-def test_serve_refuses_a_store_backend_that_the_store_does_not_keep(project, spawner):
-    kb_dir = project / "graphify-out" / "kb"
-    kb_dir.mkdir()
-    (kb_dir / "store.sqlite").write_bytes(b"")
-    tools = GraphifyTools(workspace_root=lambda: str(project), spawn=spawner)
-    with pytest.raises(ValueError, match="keeps its knowledge base in the store 'sqlite', not in 'memory'"):
-        tools.serve(store="memory")
-    assert spawner.calls == []
 
 
 def test_snapshot_export_refuses_unsafe_files(tmp_path):
