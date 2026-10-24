@@ -323,6 +323,23 @@ def _write(root, files):
         (root / name).write_text(body, encoding="utf-8")
 
 
+def _note(root, node_id):
+    """Link a knowledge base document of the project store to `node_id`."""
+    from graphify.kb import KnowledgeBase
+
+    knowledge = KnowledgeBase(root / "graphify-out" / "graph.json")
+    note = {"op": "add_document", "title": "Notes", "body": "Uses the pool.", "nodes": [node_id]}
+    knowledge.batch([note], actor="tester")
+    knowledge.flush()
+
+
+def _linked(root):
+    """The node ids that the document of `_note` links."""
+    from graphify.kb import KnowledgeBase
+
+    return KnowledgeBase(root / "graphify-out" / "graph.json", create=False).get_document("notes")["nodes"]
+
+
 def test_real_move_definition_in_python_and_typescript(tmp_path):
     _write(
         tmp_path,
@@ -336,6 +353,7 @@ def test_real_move_definition_in_python_and_typescript(tmp_path):
     )
     tools = GraphifyTools(workspace_root=lambda: str(tmp_path))
     assert tools.build(cluster=False, timeout_s=600).nodes
+    _note(tmp_path, "app_util_slugify")
     preview = tools.move("app/util.py::slugify", "app/text.py")
     assert not preview.applied and not preview.conflicts and preview.created == ("app/text.py",)
     assert "--- /dev/null" in preview.diff and not (tmp_path / "app/text.py").exists()  # a preview writes nothing
@@ -345,6 +363,9 @@ def test_real_move_definition_in_python_and_typescript(tmp_path):
     assert "import re" in text and "def slugify(s):" in text
     assert "def slugify" not in (tmp_path / "app/util.py").read_text(encoding="utf-8")
     assert "from app.text import slugify" in (tmp_path / "app/main.py").read_text(encoding="utf-8")
+    # The knowledge base document follows the new node id.
+    assert done.moved_nodes == ("app_util_slugify -> app_text_slugify",) and _linked(tmp_path) == ["app_text_slugify"]
+    assert done.kb == ("graphify-out/kb: 1 moved, 0 pending, 0 with no records at the old id",)
     moved = tools.move("formatName()", "web/names.ts", apply=True)
     assert moved.applied and "web/names.ts" in moved.created
     assert "from './names'" in (tmp_path / "web/main.ts").read_text(encoding="utf-8")
@@ -379,3 +400,15 @@ def test_real_move_conflict_writes_nothing(tmp_path):
     blocked = tools.move("a.py::job", "b.py", apply=True)
     assert not blocked.applied and blocked.conflicts and "Nothing was written" in str(blocked)
     assert (tmp_path / "a.py").read_text() == "def job():\n    return 1\n"
+
+
+def test_real_rename_and_move_file_keep_knowledge_base_links(tmp_path):
+    tools, _ = _rename_project(tmp_path)
+    _note(tmp_path, "src_demo_db_connect")
+    renamed = tools.rename("demo.db/connect", "open-conn", apply=True, check=False)
+    assert renamed.moved_nodes == ("src_demo_db_connect -> src_demo_db_open_conn",)
+    assert renamed.kb == ("graphify-out/kb: 1 moved, 0 pending, 0 with no records at the old id",)
+    assert _linked(tmp_path) == ["src_demo_db_open_conn"]
+    moved = tools.move_file("src/demo/db.clj", "src/demo/store.clj", apply=True, check=False)
+    assert "src_demo_db_open_conn -> src_demo_store_open_conn" in moved.moved_nodes and moved.kb
+    assert _linked(tmp_path) == ["src_demo_store_open_conn"]

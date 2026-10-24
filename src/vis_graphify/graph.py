@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections import deque
+from collections import Counter, deque
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -322,3 +322,78 @@ def hubs(graph: Graph, limit: int, relations: frozenset[str] | None = None) -> l
         counts[link.target] = counts.get(link.target, 0) + 1
     ranked = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
     return [(node_id, count) for node_id, count in ranked if node_id in graph.nodes][:limit]
+
+
+def moved_ids(
+    before: Graph, after: Graph, files: dict[str, str], names: dict[str, str], scope: set[str]
+) -> dict[str, str]:
+    """Pair the node ids that a rename or a move replaced: old id to new id.
+
+    `files` maps each moved file, or the file of a moved definition, to its new file.
+    `names` maps old names to new names, and `scope` names the files, before the change,
+    that can hold a node with a new id. Only an id that left the graph pairs, and only with
+    an id that came in, in the same file type. A node of a moved file keeps the part of its
+    id after the file prefix. Else it pairs with the one new node in its new file with its
+    label, or with its label after the rename. A new id that two old ids claim pairs with
+    neither.
+    """
+    gone = {
+        node_id: node
+        for node_id, node in before.nodes.items()
+        if node_id not in after.nodes and node.get("source_file") in scope
+    }
+    came = {node_id: node for node_id, node in after.nodes.items() if node_id not in before.nodes}
+    claims: dict[str, str] = {}
+    for old_file, new_file in files.items():
+        old_prefix = _id_prefix([i for i, node in before.nodes.items() if node.get("source_file") == old_file])
+        new_prefix = _id_prefix([i for i, node in after.nodes.items() if node.get("source_file") == new_file])
+        if not old_prefix or not new_prefix:
+            continue
+        for node_id, node in gone.items():
+            if node.get("source_file") != old_file or not node_id.startswith(old_prefix):
+                continue
+            candidate = new_prefix + node_id[len(old_prefix) :]
+            fresh = came.get(candidate)
+            if fresh and fresh.get("source_file") == new_file and fresh.get("file_type") == node.get("file_type"):
+                claims[node_id] = candidate
+    index: dict[tuple, list[str]] = {}
+    for node_id, node in came.items():
+        index.setdefault((node.get("source_file"), node.get("label"), node.get("file_type")), []).append(node_id)
+    for node_id, node in gone.items():
+        if node_id in claims:
+            continue
+        file = files.get(node.get("source_file"), node.get("source_file"))
+        label = str(node.get("label") or "")
+        found = {
+            candidate
+            for name in {label, _renamed(label, names)}
+            for candidate in index.get((file, name, node.get("file_type")), ())
+        }
+        if len(found) == 1:
+            claims[node_id] = found.pop()
+    taken = Counter(claims.values())
+    return {old: new for old, new in sorted(claims.items()) if taken[new] == 1}
+
+
+def _id_prefix(ids: list[str]) -> str:
+    """The start that all `ids` share, cut after a whole `_` part: the id of their file."""
+    if not ids:
+        return ""
+    low, high = min(ids), max(ids)
+    size = 0
+    while size < len(low) and low[size] == high[size]:
+        size += 1
+    prefix = low[:size]
+    if all(node_id == prefix or node_id.startswith(prefix + "_") for node_id in ids):
+        return prefix
+    return prefix[: prefix.rfind("_")] if "_" in prefix else ""
+
+
+def _renamed(label: str, names: dict[str, str]) -> str:
+    """`label` with a new name: `old` gives `new`, `old()` gives `new()` and `.old()` gives `.new()`."""
+    if label in names:
+        return names[label]
+    head = "." if label.startswith(".") else ""
+    tail = "()" if label.endswith("()") else ""
+    core = label[len(head) : len(label) - len(tail)]
+    return head + names[core] + tail if core in names else label

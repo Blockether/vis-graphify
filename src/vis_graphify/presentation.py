@@ -222,6 +222,8 @@ def rename(result: RenameResult) -> vis.ActivityPresentation:
     if result.mentions:
         kept = "\n".join(result.mentions[:10]) + ("\n…" if len(result.mentions) > 10 else "")
         content += (vis.ActivityText(f"Other code that spells {result.old} and stays:\n{kept}"),)
+    if result.kb:
+        content += (vis.ActivityText("Knowledge base:\n" + "\n".join(result.kb)),)
     return vis.ActivityPresentation(
         "Rename symbol",
         f"{change}: {state}, {_plural(len(result.edits), 'edit')} in {_plural(len(result.files), 'file')}{checked}",
@@ -266,6 +268,8 @@ def _move(label: str, result: MoveResult) -> vis.ActivityPresentation:
     if result.mentions:
         kept = "\n".join(result.mentions[:10]) + ("\n…" if len(result.mentions) > 10 else "")
         content += (vis.ActivityText(f"Other code that names the old place and stays:\n{kept}"),)
+    if result.kb:
+        content += (vis.ActivityText("Knowledge base:\n" + "\n".join(result.kb)),)
     return vis.ActivityPresentation(label, f"{change}: {state}, {_plural(len(result.files), 'file')}{checked}", content)
 
 

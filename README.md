@@ -80,6 +80,8 @@ the call writes nothing. The result has these fields:
   `get` on receivers of unknown type;
 - `mentions`: other code symbols that spell the old name. They stay unchanged; check them.
 - `text_mentions`: the count of strings, comments and keywords that spell the old name. They stay unchanged.
+- `moved_nodes` and `kb`: the graph nodes with a new id, and the knowledge bases that got the new
+  ids. See [Keep knowledge base links after a rename or a move](#keep-knowledge-base-links-after-a-rename-or-a-move).
 
 Without `apply=True`, the call is a preview and writes nothing. A file that changed after the plan stops the write.
 
@@ -124,7 +126,8 @@ agent calls `graphify.move_file("src/app/util.clj", "src/app/text/core.clj", app
 - For Rust, `impl` blocks move with their type. A private item that the new module needs becomes
   `pub(crate)`. `notes` lists these changes.
 
-The result has `diff`, `created`, `deleted`, `renames`, `notes` and `conflicts`. The call writes
+The result has `diff`, `created`, `deleted`, `renames`, `notes`, `conflicts`, `moved_nodes` and
+`kb`, as for [a rename](#keep-knowledge-base-links-after-a-rename-or-a-move). The call writes
 nothing when a conflict blocks the move. Examples are a name that the target file already defines,
 a target file that exists, or an import cycle. Without `apply=True`, the call is a preview. A
 written move updates the graph and runs the project check, as `rename` does.
@@ -184,6 +187,24 @@ with `kb_search` and `kb_node`. The other `kb_*` calls use the server of the lat
 call, give `url`. `kb_stop()` stops a server that
 `kb_serve` started. The [knowledge base guide](https://github.com/Blockether/graphify/blob/v8/docs/kb.md)
 describes the HTTP API and the ontology.
+
+### Keep knowledge base links after a rename or a move
+
+A rename or a move gives a code node a new id. Your edits, edges and document links of that node
+then go to the new id. `rename`, `move` and `move_file` do this after each written change:
+
+- `moved_nodes` lists each node with a new id, as `old id -> new id`.
+- The project store `graphify-out/kb/` gets the new ids through `graphify kb move`.
+- The server of `kb_connect` and the [configured server](#save-the-server-in-settings) get them over
+  HTTP. Servers that `kb_serve` started and servers of the project store get no HTTP call. They read
+  a store on this machine.
+- `kb` has one line for each knowledge base, for example
+  `graphify-out/kb: 1 moved, 0 pending, 0 with no records at the old id`.
+
+A pending move waits until that graph has the new code, for example after its next rebuild. After a
+file move, graphify often finds the node by its file, label and class first. The links are then at
+the new id already, and the line counts them as no records at the old id. A line with `not updated`
+gives the error, and the code change stays written.
 
 ### Use a hosted knowledge base
 

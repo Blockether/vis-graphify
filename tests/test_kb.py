@@ -1,3 +1,4 @@
+import subprocess
 import threading
 from pathlib import Path
 
@@ -472,11 +473,16 @@ def test_serve_reports_a_crashed_server(project):
     assert "address in use" in str(error.value)
 
 
-def test_serve_refuses_a_port_with_another_graph(project, tmp_path_factory):
+def _other_project(project, tmp_path_factory):
+    """Another project with a copy of the project graph."""
     other = tmp_path_factory.mktemp("other")
     (other / "graphify-out").mkdir()
     (other / "graphify-out" / "graph.json").write_text((project / "graphify-out" / "graph.json").read_text())
-    server = _start(other)
+    return other
+
+
+def test_serve_refuses_a_port_with_another_graph(project, tmp_path_factory):
+    server = _start(_other_project(project, tmp_path_factory))
     try:
         tools = GraphifyTools(workspace_root=lambda: str(project), spawn=lambda *a, **k: pytest.fail("no spawn"))
         with pytest.raises(RuntimeError, match="already serves"):
@@ -484,3 +490,61 @@ def test_serve_refuses_a_port_with_another_graph(project, tmp_path_factory):
     finally:
         server.shutdown()
         server.server_close()
+
+
+def test_moved_nodes_reach_a_server_of_another_graph(project, tmp_path_factory, monkeypatch):
+    monkeypatch.delenv("GRAPHIFY_KB_URL", raising=False)
+    server = _start(_other_project(project, tmp_path_factory))
+    try:
+        tools = GraphifyTools(workspace_root=lambda: str(project), kb_actor="tester")
+        tools.kb_connect(server.url)
+        # Its graph still has the old node, so the move waits there. A node without records changes nothing.
+        lines = tools._kb_moves(project.resolve(), {"src_app_db_query": "src_app_db_fetch", "gone": "came"})
+        assert lines == (f"{server.url}: 0 moved, 1 pending, 1 with no records at the old id",)
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_moved_nodes_skip_the_servers_of_the_project_store_and_of_kb_serve(project, tmp_path_factory, monkeypatch):
+    knowledge = KnowledgeBase(project / "graphify-out" / "graph.json")
+    note = {"op": "add_document", "title": "Query notes", "body": "Slow.", "nodes": ["src_app_db_query"]}
+    knowledge.batch([note], actor="tester")
+    knowledge.flush()
+    other = _other_project(project, tmp_path_factory)
+    local, elsewhere = _start(project), _start(other)
+    runs = []
+
+    def run(argv, **kwargs):
+        runs.append(argv)
+        return subprocess.CompletedProcess(argv, 0, '[{"status": "moved"}]', "")
+
+    try:
+        monkeypatch.delenv("GRAPHIFY_KB_TOKEN", raising=False)
+        monkeypatch.setenv("GRAPHIFY_KB_URL", local.url)
+        tools = GraphifyTools(
+            workspace_root=lambda: str(project), runner=run, spawn=lambda *a, **k: pytest.fail("no spawn")
+        )
+        # kb_serve finds the server of another project, which keeps the ids of that project.
+        tools.kb_serve(root=str(other), port=elsewhere.port)
+        # The configured server serves this store, so only `graphify kb move` writes the moves.
+        lines = tools._kb_moves(project.resolve(), {"src_app_db_query": "src_app_db_fetch"})
+        assert lines == ("graphify-out/kb: 1 moved, 0 pending, 0 with no records at the old id",) and len(runs) == 1
+    finally:
+        for server in (local, elsewhere):
+            server.shutdown()
+            server.server_close()
+
+
+def test_moved_nodes_report_a_server_that_fails(project, monkeypatch):
+    monkeypatch.delenv("GRAPHIFY_KB_TOKEN", raising=False)
+    tools = GraphifyTools(workspace_root=lambda: str(project))
+    moved = {"src_app_db_query": "src_app_db_fetch"}
+    dead = f"http://127.0.0.1:{_free_port()}"
+    monkeypatch.setenv("GRAPHIFY_KB_URL", dead)
+    (line,) = tools._kb_moves(project.resolve(), moved)
+    assert line.startswith(f"{dead}: not updated: No knowledge base server answers at {dead}")
+    monkeypatch.setenv("GRAPHIFY_KB_URL", "ftp://kb.example.com")
+    assert tools._kb_moves(project.resolve(), moved) == (
+        "configured server: not updated: GRAPHIFY_KB_URL: ftp://kb.example.com is not an http or https URL.",
+    )

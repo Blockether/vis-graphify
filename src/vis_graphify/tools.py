@@ -316,9 +316,14 @@ class RenameResult:
         str,
         "The project check that ran after the write, such as `go vet ./...: passed`, with the first error lines on failure. Empty when none ran.",
     ] = ""
+    moved_nodes: Annotated[tuple[str, ...], "`old id -> new id` of each graph node that the write gave a new id."] = ()
+    kb: Annotated[
+        tuple[str, ...],
+        "One line for each knowledge base that got the new node ids: the project store or a server, with the counts or the error.",
+    ] = ()
 
     def __str__(self) -> str:
-        """A short summary: counts, conflicts, each changed line and code mentions."""
+        """A short summary: counts, conflicts, each changed line, code mentions and the knowledge base."""
         change = f"{self.old} -> {self.new}: {len(self.edits)} edits in {len(self.files)} files"
         if self.conflicts:
             return "\n".join([f"Blocked {change}. Nothing was written. Conflicts:", *self.conflicts])
@@ -333,6 +338,7 @@ class RenameResult:
             lines.append(f"Kept {self.text_mentions} mentions in strings, comments and keywords.")
         if self.check:
             lines.append(f"Check {self.check}")
+        lines += [f"Knowledge base {line}" for line in self.kb]
         return "\n".join(lines)
 
 
@@ -398,9 +404,14 @@ class MoveResult:
         str,
         "The project check that ran after the write, such as `go vet ./...: passed`, with the first error lines on failure. Empty when none ran.",
     ] = ""
+    moved_nodes: Annotated[tuple[str, ...], "`old id -> new id` of each graph node that the write gave a new id."] = ()
+    kb: Annotated[
+        tuple[str, ...],
+        "One line for each knowledge base that got the new node ids: the project store or a server, with the counts or the error.",
+    ] = ()
 
     def __str__(self) -> str:
-        """A short summary: the move, conflicts, renames, notes, code mentions and the diff."""
+        """A short summary: the move, conflicts, renames, notes, code mentions, the diff and the knowledge base."""
         change = f"{self.subject}: {self.source} -> {self.target}, {len(self.files)} files"
         if self.conflicts:
             return "\n".join([f"Blocked move of {change}. Nothing was written. Conflicts:", *self.conflicts])
@@ -418,6 +429,7 @@ class MoveResult:
         lines.append(_clip_lines(self.diff, 80))
         if self.check:
             lines.append(f"Check {self.check}")
+        lines += [f"Knowledge base {line}" for line in self.kb]
         return "\n".join(lines)
 
 
@@ -439,6 +451,44 @@ def _within(file: str | None, scope: str) -> bool:
 def _raw(graph: g.Graph) -> dict:
     """The graph.json shape that `graphify.refactor` reads, from the cached graph."""
     return {"nodes": list(graph.nodes.values()), "links": [dataclasses.asdict(link) for link in graph.links]}
+
+
+def _move_maps(root: Path, plan) -> tuple[dict[str, str], dict[str, str], set[str]]:
+    """The moved files, the renamed modules and the changed files of a move plan, for `graph.moved_ids`.
+
+    A move that also moves a test file deletes and creates one more file each: that pair moves too.
+    Else a deleted file pairs with the one created file with its name.
+    """
+    source, target = _relative(root, plan.source), _relative(root, plan.target)
+    files = {source: target}
+    deleted = [file for file in (_relative(root, f) for f in plan.deleted) if file != source]
+    created = [file for file in (_relative(root, f) for f in plan.created) if file != target]
+    if len(deleted) == 1 and len(created) == 1:
+        files[deleted[0]] = created[0]
+    else:
+        for old in deleted:
+            same = [new for new in created if Path(new).name == Path(old).name]
+            if len(same) == 1:
+                files[old] = same[0]
+    return files, dict(plan.renames), {_relative(root, f) for f in plan.files} | set(files)
+
+
+KB_BATCH_LIMIT = 10000
+"""The most operations that one knowledge base batch takes."""
+
+KB_MOVE_PAIRS = 1000
+"""The most id pairs in one `graphify kb move` command line."""
+
+
+def _kb_outcome(place: str, results: list, error: str = "") -> str:
+    """One line on the node moves that a knowledge base got: the count of each status, then the error."""
+    statuses = Counter(str(item.get("status")) for item in results if isinstance(item, dict))
+    counts = (
+        f"{statuses['moved']} moved, {statuses['pending']} pending, {statuses['skipped']} with no records at the old id"
+    )
+    if not error:
+        return f"{place}: {counts}"
+    return f"{place}: {counts}, then not updated: {error}" if results else f"{place}: not updated: {error}"
 
 
 def _listing(header: str, rows, field: str, limit: int = 40) -> str:
@@ -731,6 +781,8 @@ class GraphifyTools:
         self._kb_actor = kb_actor
         self._kb_url: str | None = None
         self._kb_servers: dict[str, subprocess.Popen] = {}
+        # kb_serve: the URLs of the servers that it started or found. Each serves a project store on this machine.
+        self._kb_local: set[str] = set()
         # kb_connect: the masked token form, the reader of a host secret handle and the checked tokens by server URL.
         self._kb_ask_token = kb_ask_token
         self._kb_secret = kb_secret
@@ -993,6 +1045,9 @@ class GraphifyTools:
         `apply`, nothing is written. Strings, comments and keywords stay; `text_mentions`
         counts them. A written rename updates the graph and, with `check`, runs the project
         check: `go vet`, `tsc --noEmit`, `cargo check`, `clj-kondo` or a Python syntax check.
+        When a node gets a new id, its knowledge base records follow it, and `kb` reports
+        the outcome. The project store `graphify-out/kb/` gets the new ids, and so do the
+        server of kb_serve or kb_connect and the server in Settings or `$GRAPHIFY_KB_URL`.
 
         Args:
             node: The symbol: id, label or a qualified name (`ns/name`, `module.name`, `Class.method`, `crate::m::name`) or `file::name`.
@@ -1010,10 +1065,15 @@ class GraphifyTools:
         contents = refactor.rewrite(plan) if plan.edits else {}
         applied = False
         checked = ""
+        moved: dict[str, str] = {}
+        told: tuple[str, ...] = ()
         if apply and not plan.conflicts:
             refactor.apply_rename(plan)
             applied = True
             self._update(path)
+            scope = {_relative(path, f) for f in plan.files}
+            moved = g.moved_ids(graph, g.load(path), {}, {plan.old: new_name}, scope)
+            told = self._kb_moves(path, moved)
             checked = self._check(path, [_relative(path, f) for f in plan.files]) if check else ""
         return RenameResult(
             node=_node(graph, node_id),
@@ -1028,6 +1088,8 @@ class GraphifyTools:
             diff=_unified_diff(path, contents),
             changes=_changed(path, {f: n for f, (_, n) in contents.items()}, [(e.file, e.line) for e in plan.edits]),
             check=checked,
+            moved_nodes=tuple(f"{old} -> {new}" for old, new in moved.items()),
+            kb=told,
         )
 
     def add_parameter(
@@ -1094,6 +1156,7 @@ class GraphifyTools:
         `pub(crate)` when the new module needs them. With `apply=True`, the files are written unless a conflict blocks the move,
         such as a name that the target file already defines or an import cycle. A written
         move updates the graph and, with `check`, runs the project check, as `rename` does.
+        The knowledge base records of a node with a new id follow it, as with `rename`.
 
         Args:
             node: The definition: id, label, qualified name or `file::name`.
@@ -1113,7 +1176,7 @@ class GraphifyTools:
                 raise
             node_id = node
         plan = moves.plan_move(_raw(graph), node_id, to, path)
-        return self._moved(path, plan, apply, check)
+        return self._moved(path, graph, plan, apply, check)
 
     def move_file(
         self, path: str, new_path: str, root: str = ".", tests: bool = True, apply: bool = False, check: bool = True
@@ -1125,7 +1188,8 @@ class GraphifyTools:
         changes, and with `tests` the test namespace `x-test` of namespace `x` moves along.
         With `apply=True`, the files are written unless a conflict blocks the move, such as
         a target file that exists. A written move updates the graph and, with `check`,
-        runs the project check, as `rename` does.
+        runs the project check, as `rename` does. The knowledge base records of the nodes
+        with new ids follow them, as with `rename`.
 
         Args:
             path: The file to move, relative to the project root.
@@ -1138,19 +1202,24 @@ class GraphifyTools:
         from graphify import moves
 
         base = self._root(root)
-        plan = moves.plan_move_file(_raw(self._graph(base)), path, new_path, base, tests=tests)
-        return self._moved(base, plan, apply, check)
+        graph = self._graph(base)
+        plan = moves.plan_move_file(_raw(graph), path, new_path, base, tests=tests)
+        return self._moved(base, graph, plan, apply, check)
 
-    def _moved(self, path: Path, plan, apply: bool, check: bool) -> MoveResult:
-        """Write a conflict-free move plan when `apply` is set, then describe it."""
+    def _moved(self, path: Path, graph: g.Graph, plan, apply: bool, check: bool) -> MoveResult:
+        """Write a conflict-free move plan when `apply` is set, then describe it. `graph` is the graph before."""
         from graphify import moves
 
         applied = False
         checked = ""
+        moved: dict[str, str] = {}
+        told: tuple[str, ...] = ()
         if apply and not plan.conflicts:
             moves.apply_move(plan)
             applied = True
             self._update(path)
+            moved = g.moved_ids(graph, g.load(path), *_move_maps(path, plan))
+            told = self._kb_moves(path, moved)
             kept = [_relative(path, f) for f in plan.files if f not in plan.deleted]
             checked = self._check(path, kept) if check else ""
         return MoveResult(
@@ -1168,6 +1237,8 @@ class GraphifyTools:
             text_mentions=sum(1 for m in plan.mentions if m.kind != "symbol"),
             diff=_unified_diff(path, plan.contents),
             check=checked,
+            moved_nodes=tuple(f"{old} -> {new}" for old, new in moved.items()),
+            kb=told,
         )
 
     def domain(
@@ -1279,6 +1350,80 @@ class GraphifyTools:
             return None
         return health, client.request("GET", "/api/stats")
 
+    def _kb_moves(self, path: Path, moved: dict[str, str]) -> tuple[str, ...]:
+        """Send the new ids of moved nodes to the knowledge bases of a project. One line for each, never an error.
+
+        The project store `graphify-out/kb/` gets them through `graphify kb move`. A server of that store
+        sees them too: each write of the store first loads the writes of other processes. A server of
+        kb_serve serves a store on this machine: this store, or the store of another project, which keeps
+        its ids. So only the other servers of `_kb_targets` get them over HTTP, unless they serve this store.
+        """
+        if not moved:
+            return ()
+        graph_file = g.graph_path(path).resolve()
+        ops = [{"op": "move_node", "from": old, "to": new} for old, new in sorted(moved.items())]
+        lines = []
+        if (graph_file.parent / "kb" / "overlay.json").is_file():
+            lines.append(self._kb_move_store(path, graph_file, ops))
+        try:
+            urls = self._kb_targets()
+        except ValueError as error:
+            return (*lines, f"configured server: not updated: {error}")
+        for url in urls:
+            if url not in self._kb_local:
+                line = self._kb_move_server(url, graph_file, ops)
+                if line:
+                    lines.append(line)
+        return tuple(lines)
+
+    def _kb_targets(self) -> list[str]:
+        """The servers that get new node ids: the server of kb_serve or kb_connect, and the configured server.
+
+        The default URL alone does not choose a server, so it gets nothing.
+        """
+        configured, _, source = self._kb_configured()
+        urls = [self._kb_url] if self._kb_url else []
+        if source == "Settings" or os.environ.get("GRAPHIFY_KB_URL", "").strip():
+            urls.append(configured)
+        return list(dict.fromkeys(urls))
+
+    def _kb_move_store(self, path: Path, graph_file: Path, ops: list[dict]) -> str:
+        """Run `graphify kb move` on the project store, and describe the outcome in one line."""
+        place = _relative(path, str(graph_file.parent / "kb"))
+        results: list = []
+        for start in range(0, len(ops), KB_MOVE_PAIRS):
+            ids = [node_id for op in ops[start : start + KB_MOVE_PAIRS] for node_id in (op["from"], op["to"])]
+            argv = graphify_command() + ["kb", "move", *ids, "--graph", str(graph_file), "--json"]
+            try:
+                done = self._run(argv, cwd=str(path), env=_child_env(), capture_output=True, text=True, timeout=300)
+            except subprocess.TimeoutExpired:
+                return _kb_outcome(place, results, "graphify kb move did not finish in 300 s")
+            except OSError as error:
+                return _kb_outcome(place, results, str(error))
+            if done.returncode != 0:
+                reason = _tail(done.stderr or done.stdout or "", 1) or f"graphify kb move exited with {done.returncode}"
+                return _kb_outcome(place, results, reason)
+            try:
+                results += json.loads(done.stdout or "[]")
+            except ValueError:
+                return _kb_outcome(place, results, "graphify kb move did not print JSON")
+        return _kb_outcome(place, results)
+
+    def _kb_move_server(self, url: str, graph_file: Path, ops: list[dict]) -> str | None:
+        """Send moves to one server, and describe the outcome in one line. None when it serves the project store."""
+        results: list = []
+        try:
+            client = self._kb(url, timeout_s=15.0)
+            served = client.request("GET", "/api/stats").get("graph")
+            if served and Path(str(served)).resolve() == graph_file:
+                return None
+            for start in range(0, len(ops), KB_BATCH_LIMIT):
+                answer = client.request("POST", "/api/batch", {"ops": ops[start : start + KB_BATCH_LIMIT]})
+                results += answer.get("results") or []
+        except (kb.KBRequestError, ValueError) as error:
+            return _kb_outcome(url, results, str(error))
+        return _kb_outcome(url, results)
+
     def kb_serve(
         self, root: str = ".", port: int = 7878, host: str = "127.0.0.1", read_only: bool = False, timeout_s: int = 120
     ) -> kb.KBServer:
@@ -1319,6 +1464,7 @@ class GraphifyTools:
             if served != graph_file.resolve():
                 raise RuntimeError(f"Port {port} already serves {served}. Choose another port.")
             self._kb_url = url
+            self._kb_local.add(url)
             if token:
                 self._kb_tokens[url] = token
             process = self._kb_servers.get(url)
@@ -1349,6 +1495,7 @@ class GraphifyTools:
                 raise TimeoutError(f"graphify kb serve did not answer at {url} in {timeout_s} s.")
             time.sleep(0.2)
         self._kb_servers[url] = process
+        self._kb_local.add(url)
         self._kb_url = url
         if token:
             self._kb_tokens[url] = token
@@ -1371,6 +1518,7 @@ class GraphifyTools:
         except subprocess.TimeoutExpired:
             process.kill()
         del self._kb_servers[client.url]
+        self._kb_local.discard(client.url)
         if self._kb_url == client.url:
             self._kb_url = None
         health, stats = running or ({}, {})
@@ -1501,7 +1649,9 @@ class GraphifyTools:
           {"op": "add_document", "title": ..., "body": markdown, "tags": [...], "nodes": [ids]}
           {"op": "update_document", "id": ..., "title" | "body" | "tags" | "nodes": ...}
           {"op": "delete_document", "id": ...}
-        A `[[label]]` in a document body links the document to that node.
+          {"op": "move_node", "from": ..., "to": ...}       the records of a code node follow its new id
+        A `[[label]]` in a document body links the document to that node. rename, move and move_file
+        send `move_node` themselves.
 
         Args:
             ops: The operations, in order. At most 10000.

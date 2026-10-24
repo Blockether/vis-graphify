@@ -16,6 +16,7 @@ from vis_graphify.tools import (
     HubsResult,
     ImpactResult,
     MoveResult,
+    Node,
     PathResult,
     Reference,
     ReferencesResult,
@@ -324,3 +325,18 @@ def test_add_parameter_states(tools):
     assert "undefined: x" in shown.content[0].text
     blocked = SignatureResult(node, "opts", "{}", False, (), (), ("x: used as a value.",), "")
     assert summary(presentation.add_parameter(blocked)) == "connect() + opts: not written, 1 conflict"
+
+
+def test_moves_show_the_knowledge_base():
+    told = ("graphify-out/kb: 1 moved, 0 pending, 0 with no records at the old id",)
+    node = Node("app_util_slugify", "slugify()", "app/util.py", 4, "function", None)
+    renamed = RenameResult(node, "slugify", "slug", True, ("app/util.py",), (), (), (), 0, "", kb=told)
+    files = ("app/main.py", "app/text.py", "app/util.py")
+    moved = MoveResult(
+        "slugify", "app/util.py", "app/text.py", True, files, ("app/text.py",), (), (), (), (), (), 0, "", kb=told
+    )
+    for shown in (presentation.rename(renamed), presentation.move(moved), presentation.move_file(moved)):
+        assert "Knowledge base:\n" + told[0] in [getattr(block, "text", "") for block in shown.content]
+    assert str(moved).endswith("\nKnowledge base " + told[0]) and str(renamed).endswith("\nKnowledge base " + told[0])
+    quiet = presentation.move(dataclasses.replace(moved, kb=()))
+    assert not any(getattr(block, "text", "").startswith("Knowledge base") for block in quiet.content)

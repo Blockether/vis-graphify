@@ -234,3 +234,78 @@ def test_private_marks_unexported_definitions(tmp_path):
 
     assert all(_private(tmp_path, node(*row)) for row in hidden)
     assert not any(_private(tmp_path, node(*row)) for row in shown)
+
+
+def _store(root):
+    """Give the project a knowledge base store, as `graphify kb` leaves it."""
+    (root / "graphify-out" / "kb").mkdir()
+    (root / "graphify-out" / "kb" / "overlay.json").write_text("{}")
+
+
+def test_moved_nodes_go_to_the_project_store(project, monkeypatch):
+    monkeypatch.delenv("GRAPHIFY_KB_URL", raising=False)
+    root = project.resolve()
+    idle = FakeRunner()
+    # Without moved nodes, or without a store and a server, nothing runs.
+    assert tools_for(root, idle)._kb_moves(root, {}) == ()
+    assert tools_for(root, idle)._kb_moves(root, {"src_app_db_query": "src_app_db_fetch"}) == ()
+    assert idle.calls == []
+    _store(root)
+    runner = FakeRunner(stdout=json.dumps([{"status": "moved"}, {"status": "skipped"}]))
+    lines = tools_for(root, runner)._kb_moves(root, {"src_app_db_query": "src_app_db_fetch", "lonely": "alone"})
+    assert lines == ("graphify-out/kb: 1 moved, 0 pending, 1 with no records at the old id",)
+    argv, kwargs = runner.calls[0]
+    graph = str(root / "graphify-out" / "graph.json")
+    assert argv[-9:] == [
+        "kb",
+        "move",
+        "lonely",
+        "alone",
+        "src_app_db_query",
+        "src_app_db_fetch",
+        "--graph",
+        graph,
+        "--json",
+    ]
+    assert kwargs["cwd"] == str(root) and kwargs["timeout"] == 300 and "PYTHONPATH" not in kwargs["env"]
+
+
+def _timeout():
+    raise subprocess.TimeoutExpired("graphify", 300)
+
+
+@pytest.mark.parametrize(
+    ("runner", "error"),
+    [
+        (FakeRunner(returncode=1, stderr="Traceback\nKBError: the store is locked\n"), "KBError: the store is locked"),
+        (FakeRunner(returncode=2), "graphify kb move exited with 2"),
+        (FakeRunner(stdout="1 moved"), "graphify kb move did not print JSON"),
+        (FakeRunner(effect=_timeout), "graphify kb move did not finish in 300 s"),
+    ],
+)
+def test_moved_nodes_report_a_store_failure(project, monkeypatch, runner, error):
+    monkeypatch.delenv("GRAPHIFY_KB_URL", raising=False)
+    root = project.resolve()
+    _store(root)
+    lines = tools_for(root, runner)._kb_moves(root, {"src_app_db_query": "src_app_db_fetch"})
+    assert lines == (f"graphify-out/kb: not updated: {error}",)
+
+
+def test_moved_nodes_report_the_moves_before_a_failure(project, monkeypatch):
+    monkeypatch.delenv("GRAPHIFY_KB_URL", raising=False)
+    monkeypatch.setattr("vis_graphify.tools.KB_MOVE_PAIRS", 1)
+    root = project.resolve()
+    _store(root)
+    answers = iter([(0, '[{"status": "moved"}]', ""), (1, "", "error: graph.json is missing\n")])
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append(argv)
+        code, out, err = next(answers)
+        return subprocess.CompletedProcess(argv, code, out, err)
+
+    lines = tools_for(root, run)._kb_moves(root, {"lonely": "alone", "src_app_db_query": "src_app_db_fetch"})
+    assert len(calls) == 2
+    assert lines == (
+        "graphify-out/kb: 1 moved, 0 pending, 0 with no records at the old id, then not updated: error: graph.json is missing",
+    )

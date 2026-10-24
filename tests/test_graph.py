@@ -130,3 +130,88 @@ def test_resolve_qualified_method_type_and_path(tmp_path):
     assert g.resolve(graph, "HttpClient.post()") == "client_post"
     assert g.resolve(graph, "orders.Order") == "orders_order"
     assert g.resolve(graph, "crate::util::sum") == "util_sum"
+
+
+def _graph(tmp_path, name, nodes):
+    return g.parse(tmp_path / name, {"nodes": [{"file_type": "code", **node} for node in nodes], "links": []})
+
+
+def test_moved_ids_pair_a_renamed_definition_by_its_new_label(tmp_path):
+    before = _graph(
+        tmp_path,
+        "before.json",
+        [
+            {"id": "py_util", "label": "util.py", "source_file": "py/util.py"},
+            {"id": "py_util_helper", "label": "helper()", "source_file": "py/util.py"},
+            {"id": "py_util_box_helper", "label": ".helper()", "source_file": "py/util.py"},
+        ],
+    )
+    after = _graph(
+        tmp_path,
+        "after.json",
+        [
+            {"id": "py_util", "label": "util.py", "source_file": "py/util.py"},
+            {"id": "py_util_assist", "label": "assist()", "source_file": "py/util.py"},
+            {"id": "py_util_box_assist", "label": ".assist()", "source_file": "py/util.py"},
+        ],
+    )
+    renamed = {"helper": "assist"}
+    assert g.moved_ids(before, after, {}, renamed, {"py/util.py"}) == {
+        "py_util_box_helper": "py_util_box_assist",
+        "py_util_helper": "py_util_assist",
+    }
+    # Only a file of the change can hold a node with a new id, and an unchanged graph has none.
+    assert g.moved_ids(before, after, {}, renamed, {"py/main.py"}) == {}
+    assert g.moved_ids(before, before, {}, renamed, {"py/util.py"}) == {}
+
+
+def test_moved_ids_keep_the_id_tail_of_a_moved_file(tmp_path):
+    before = _graph(
+        tmp_path,
+        "before.json",
+        [
+            {"id": "app_util", "label": "util.py", "source_file": "app/util.py"},
+            {"id": "app_util_slugify", "label": "slugify()", "source_file": "app/util.py"},
+            {"id": "app_util_slug_parse", "label": ".parse()", "source_file": "app/util.py"},
+            {"id": "app_util_notes", "label": "notes", "source_file": "app/util.py", "file_type": "document"},
+        ],
+    )
+    after = _graph(
+        tmp_path,
+        "after.json",
+        [
+            {"id": "app_text", "label": "text.py", "source_file": "app/text.py"},
+            {"id": "app_text_slugify", "label": "slugify()", "source_file": "app/text.py"},
+            {"id": "app_text_slug_parse", "label": ".parse()", "source_file": "app/text.py"},
+            {"id": "app_text_notes", "label": "notes", "source_file": "app/text.py"},
+        ],
+    )
+    # A node of another file type is not the same node, so it pairs with nothing.
+    assert g.moved_ids(before, after, {"app/util.py": "app/text.py"}, {}, {"app/util.py"}) == {
+        "app_util": "app_text",
+        "app_util_slug_parse": "app_text_slug_parse",
+        "app_util_slugify": "app_text_slugify",
+    }
+
+
+def test_moved_ids_pair_only_one_to_one(tmp_path):
+    before = _graph(
+        tmp_path,
+        "before.json",
+        [
+            {"id": "py_a_helper", "label": "helper()", "source_file": "py/a.py"},
+            {"id": "py_a_box_helper", "label": "helper()", "source_file": "py/a.py"},
+            {"id": "py_b_helper", "label": "helper()", "source_file": "py/b.py"},
+        ],
+    )
+    after = _graph(
+        tmp_path,
+        "after.json",
+        [
+            {"id": "py_a_assist", "label": "assist()", "source_file": "py/a.py"},
+            {"id": "py_b_assist", "label": "assist()", "source_file": "py/b.py"},
+            {"id": "py_b_box_assist", "label": "assist()", "source_file": "py/b.py"},
+        ],
+    )
+    # Two old nodes claim one new node in a.py, and one old node finds two new nodes in b.py.
+    assert g.moved_ids(before, after, {}, {"helper": "assist"}, {"py/a.py", "py/b.py"}) == {}
