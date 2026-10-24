@@ -531,6 +531,9 @@ KB_CHECK_SECONDS = 30.0
 KB_EXPORT_FORMAT = "graphify-kb-export"
 """The `format` of a `GET /api/export` answer. graphify v0.9.93-blockether.17 added that route."""
 
+KB_STORE_ENV = "GRAPHIFY_KB_STORE"
+"""Names the store backend of a new store for graphify. It also confirms a `module:attr` backend that a store names."""
+
 
 @dataclass
 class _KBSession:
@@ -664,14 +667,15 @@ def _kb_write_export(folder: Path, answer: dict) -> dict[str, int]:
 
     graphify writes the files and puts the edits straight into the store of the copy, so the first read
     does not move them in. Each path must be a file of a store export. Raises KBRequestError for an answer
-    that is not an export.
+    that is not an export. A copy always uses SQLite, so this interpreter loads no store code that
+    `$GRAPHIFY_KB_STORE` names.
     """
     if answer.get("format") != KB_EXPORT_FORMAT or not isinstance(answer.get("files"), list):
         raise kb.KBRequestError("The server sent no store export. It needs graphify v0.9.93-blockether.17 or later.")
     from graphify.kb import KBError, import_export
 
     try:
-        return import_export(folder, answer)
+        return import_export(folder, answer, store="sqlite")
     except KBError as error:
         message = str(error)
         raise kb.KBRequestError(f"{message[:1].upper()}{message[1:]}.") from None
@@ -901,6 +905,15 @@ def _child_env() -> dict[str, str]:
     return env
 
 
+def _kb_cwd(graph: Path) -> str:
+    """The working folder of a `graphify kb` child: the project of `graphify-out`, else the store folder.
+
+    `python -m graphify` imports a `module:attr` store backend from this folder.
+    """
+    out = graph.parent
+    return str(out.parent if out.name == g.GRAPH_DIR else out)
+
+
 def _ignore_output(out: Path) -> None:
     """Keep graphify output out of git, grep and ls: add `.gitignore` with `*` unless one exists."""
     ignore = out / ".gitignore"
@@ -1016,6 +1029,7 @@ class GraphifyTools:
         kb_ask_token: Callable[[str, Callable[[str], str | None]], str | None] | None = None,
         kb_settings: Callable[[], tuple[str, str]] | None = None,
         kb_session: Callable[[], str] | None = None,
+        kb_store: Callable[[], str] | None = None,
     ):
         self._workspace_root = workspace_root or os.getcwd
         self._run = runner or subprocess.run
@@ -1033,6 +1047,8 @@ class GraphifyTools:
         self._kb_ask_token = kb_ask_token
         # The server and token text that the person saved in Settings; empty text means not set.
         self._kb_settings = kb_settings
+        # The store backend that the person saved in Settings; empty text means not set.
+        self._kb_store = kb_store
 
     def _root(self, root: str) -> Path:
         path = Path(root).expanduser()
@@ -1815,6 +1831,14 @@ class GraphifyTools:
             running = self._kb_running(source)
             return running[0] if running else self._kb_start(source)[0]
 
+    def _kb_env(self) -> dict[str, str]:
+        """The environment of a `graphify kb` child. A store backend in Settings wins over `$GRAPHIFY_KB_STORE`."""
+        env = _child_env()
+        store = (self._kb_store() if self._kb_store else "").strip()
+        if store:
+            env[KB_STORE_ENV] = store
+        return env
+
     def _kb_start(
         self,
         source: _KBSource,
@@ -1849,14 +1873,14 @@ class GraphifyTools:
         argv = graphify_command() + ["kb", "serve", str(graph), "--host", host, "--port", str(chosen)]
         if read_only:
             argv.append("--read-only")
-        env = _child_env()
+        env = self._kb_env()
         if kb.is_loopback_url(url):
             # A loopback server needs no token, so the token of a hosted server stays out of it.
             env.pop("GRAPHIFY_KB_TOKEN", None)
         with open(log, "wb") as handle:
             process = self._spawn(
                 argv,
-                cwd=str(out.parent if out.name == g.GRAPH_DIR else out),
+                cwd=_kb_cwd(graph),
                 env=env,
                 stdin=subprocess.DEVNULL,
                 stdout=handle,
@@ -1910,7 +1934,7 @@ class GraphifyTools:
             ids = [node_id for op in ops[start : start + KB_MOVE_PAIRS] for node_id in (op["from"], op["to"])]
             argv = graphify_command() + ["kb", "move", *ids, "--graph", str(graph_file), "--json"]
             try:
-                done = self._run(argv, cwd=str(path), env=_child_env(), capture_output=True, text=True, timeout=300)
+                done = self._run(argv, cwd=str(path), env=self._kb_env(), capture_output=True, text=True, timeout=300)
             except subprocess.TimeoutExpired:
                 return _kb_outcome(place, results, "graphify kb move did not finish in 300 s")
             except OSError as error:
@@ -2323,7 +2347,7 @@ class GraphifyTools:
             argv += ["--name", title]
         try:
             done = self._run(
-                argv, cwd=str(graph.parent), env=_child_env(), capture_output=True, text=True, timeout=timeout_s
+                argv, cwd=_kb_cwd(graph), env=self._kb_env(), capture_output=True, text=True, timeout=timeout_s
             )
         except subprocess.TimeoutExpired as error:
             raise TimeoutError(f"graphify kb export did not finish in {timeout_s} s.") from error

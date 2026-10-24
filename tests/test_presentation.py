@@ -176,16 +176,20 @@ def test_settings_name_the_server_and_keep_the_token_secret(monkeypatch):
     monkeypatch.setattr(vis, "Setting", Setting)
     module, registered = _entry(monkeypatch)
     (extension,) = registered
-    url, token = module.SETTINGS
-    # Both settings keep the default scope, global only: a project file cannot change them.
+    url, token, store = module.SETTINGS
+    # The settings keep the default scope, global only: a project file cannot change them.
     assert (url.spec["id"], url.spec["type"], "scopes" in url.spec) == ("graphify_kb_url", "string", False)
     assert (token.spec["id"], token.spec["default"], token.spec["is_secret"]) == ("graphify_kb_token", "", True)
+    assert (store.spec["id"], store.spec["default"], "scopes" in store.spec) == ("graphify_kb_store", "", False)
     assert list(extension.settings) == module.SETTINGS
     # The server in Settings wins over the environment.
     monkeypatch.setenv("GRAPHIFY_KB_URL", "other.example.com")
     saved.update(graphify_kb_url=" KB.example.com/ ", graphify_kb_token="t" * 20)
     assert "the configured server https://kb.example.com;" in extension.prompt({})
     assert module._kb_settings() == (" KB.example.com/ ", "t" * 20)
+    assert module._kb_store() == ""
+    saved.update(graphify_kb_store=" memory ")
+    assert module._kb_store() == " memory "
 
 
 def test_hosts_without_string_settings_keep_the_environment(monkeypatch):
@@ -198,7 +202,7 @@ def test_hosts_without_string_settings_keep_the_environment(monkeypatch):
     monkeypatch.setattr(vis, "Setting", Setting)
     module, registered = _entry(monkeypatch)
     (extension,) = registered
-    assert module.SETTINGS == [] and module._kb_settings() == ("", "")
+    assert module.SETTINGS == [] and module._kb_settings() == ("", "") and module._kb_store() == ""
     monkeypatch.setenv("GRAPHIFY_KB_URL", "kb.example.com")
     assert "the configured server https://kb.example.com;" in extension.prompt({})
 

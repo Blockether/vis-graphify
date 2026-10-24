@@ -1,5 +1,7 @@
 """Build a real graph of a small Clojure project with the pinned graphify fork."""
 
+import json
+import os
 import textwrap
 
 import pytest
@@ -412,3 +414,41 @@ def test_real_rename_and_move_file_keep_knowledge_base_links(tmp_path):
     moved = tools.move_file("src/demo/db.clj", "src/demo/store.clj", apply=True, check=False)
     assert "src_demo_db_open_conn -> src_demo_store_open_conn" in moved.moved_nodes and moved.kb
     assert _linked(tmp_path) == ["src_demo_store_open_conn"]
+
+
+PROBE_STORE = """\
+import os
+from pathlib import Path
+
+from graphify.kb_store import STORE_FILE, SQLiteStore
+
+
+class ProbeStore(SQLiteStore):
+    \"\"\"SQLite that leaves a mark, so the test sees the process that loaded it.\"\"\"
+
+    def __init__(self, kb_dir):
+        super().__init__(Path(kb_dir) / STORE_FILE)
+        Path(__file__).with_name("probe-opened").write_text(str(os.getpid()))
+"""
+
+
+def test_real_server_loads_a_store_backend_of_the_project(tmp_path, monkeypatch):
+    for name in ("GRAPHIFY_KB_URL", "GRAPHIFY_KB_STORE"):
+        monkeypatch.delenv(name, raising=False)
+    _write(tmp_path, {"app.py": "def query():\n    return 1\n", "probe_store.py": PROBE_STORE})
+    tools = GraphifyTools(workspace_root=lambda: str(tmp_path), kb_store=lambda: "probe_store:ProbeStore")
+    try:
+        tools.write([{"op": "add_node", "label": "Billing", "class": "concept"}])
+        # The server of the store ran the backend code of the project.
+        assert int((tmp_path / "probe-opened").read_text()) != os.getpid()
+        assert tools.serve(stop=True).stopped
+        marker = tmp_path / "graphify-out" / "kb" / "store.json"
+        assert json.loads(marker.read_text()) == {"store": "probe_store:ProbeStore"}
+    finally:
+        for process in tools._kb_procs.values():
+            if process.poll() is None:
+                process.terminate()
+                process.wait(10)
+    # Without the backend in Settings, a server does not load the code that the store names.
+    with pytest.raises(RuntimeError, match="which loads code"):
+        GraphifyTools(workspace_root=lambda: str(tmp_path)).write([{"op": "add_node", "label": "Invoices"}])

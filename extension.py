@@ -156,7 +156,7 @@ def _has_secret_settings() -> bool:
     return any(p.name == "is_secret" or p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters)
 
 
-# On a Vis without text settings, the environment alone names the server.
+# On a Vis without text settings, the environment alone names the server and the store backend.
 if _has_secret_settings():
     KB_URL = vis.Setting(
         id="graphify_kb_url",
@@ -173,7 +173,14 @@ if _has_secret_settings():
         default="",
         is_secret=True,
     )
-    SETTINGS = [KB_URL, KB_TOKEN]
+    KB_STORE = vis.Setting(
+        id="graphify_kb_store",
+        label="Knowledge store backend",
+        description="The backend of new knowledge stores on this machine: sqlite, memory, an entry point of graphify.kb_stores or module:attr. Empty uses $GRAPHIFY_KB_STORE, else SQLite.",
+        type="string",
+        default="",
+    )
+    SETTINGS = [KB_URL, KB_TOKEN, KB_STORE]
 else:
     SETTINGS = []
 
@@ -183,6 +190,13 @@ def _kb_settings() -> tuple[str, str]:
     if not SETTINGS:
         return "", ""
     return str(KB_URL.value() or ""), str(KB_TOKEN.value() or "")
+
+
+def _kb_store() -> str:
+    """The store backend text that Settings hold, or empty text on a host without string settings."""
+    if not SETTINGS:
+        return ""
+    return str(KB_STORE.value() or "")
 
 
 def _prompt(env) -> str:
@@ -231,6 +245,7 @@ vis.register_extension(
                     kb_ask_token=_ask_kb_token,
                     kb_settings=_kb_settings,
                     kb_session=_session_key,
+                    kb_store=_kb_store,
                 ),
                 name="graphify",
             )

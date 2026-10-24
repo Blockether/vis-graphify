@@ -730,8 +730,10 @@ def test_client_keeps_the_base_path_and_explains_hosted_errors():
 # -- snapshots and pages ---------------------------------------------------------------
 
 
-def test_snapshot_copies_a_server_into_a_read_only_local_source(project, tmp_path_factory, spawner):
+def test_snapshot_copies_a_server_into_a_read_only_local_source(project, tmp_path_factory, spawner, monkeypatch):
     remote = _start(_other_project(project, tmp_path_factory), token=TOKEN)
+    # A copy keeps SQLite, whatever backend the environment names for new stores.
+    monkeypatch.setenv("GRAPHIFY_KB_STORE", "memory")
     try:
         tools = GraphifyTools(
             workspace_root=lambda: str(project), spawn=spawner, kb_actor="tester", kb_ask_token=lambda url, check: TOKEN
@@ -748,6 +750,7 @@ def test_snapshot_copies_a_server_into_a_read_only_local_source(project, tmp_pat
         # The copy has the 6 code nodes, the concept and the node of the document.
         assert (snap.source, snap.name, snap.nodes, snap.documents, snap.assets) == (remote.url, name, 8, 1, 0)
         assert snap.version > 0 and Path(snap.path) == (project / name).resolve()
+        assert (project / name / "kb" / "store.sqlite").is_file()
         assert str(snap).endswith(f"Read it with source={name!r}. The copy is read-only.")
         assert presentation.snapshot(snap).summary.startswith(f"{remote.url} to {name}: 8 nodes,")
         meta = json.loads((project / name / "snapshot.json").read_text())
@@ -776,6 +779,33 @@ def test_snapshot_copies_a_server_into_a_read_only_local_source(project, tmp_pat
             _stop(remote)
         except OSError:
             pass
+
+
+def test_the_store_backend_in_settings_reaches_the_kb_children(project, spawner, monkeypatch):
+    monkeypatch.setenv("GRAPHIFY_KB_STORE", "memory")
+    runs = []
+
+    def run(argv, **kwargs):
+        runs.append((argv, kwargs))
+        Path(argv[argv.index("--out") + 1]).write_text("<html></html>", encoding="utf-8")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    saved = {"store": " sqlite "}
+    tools = GraphifyTools(
+        workspace_root=lambda: str(project), spawn=spawner, runner=run, kb_store=lambda: saved["store"]
+    )
+    tools.write([{"op": "add_node", "label": "Billing", "class": "concept"}])
+    # The backend in Settings wins over the environment, for the server and for the page export.
+    assert spawner.calls[-1][1]["env"]["GRAPHIFY_KB_STORE"] == "sqlite"
+    tools.publish()
+    ((argv, options),) = runs
+    assert argv[argv.index("kb") + 1] == "export" and options["env"]["GRAPHIFY_KB_STORE"] == "sqlite"
+    # Each child runs in the project, so that a `module:attr` backend of the project imports.
+    assert Path(spawner.calls[-1][1]["cwd"]).resolve() == Path(options["cwd"]).resolve() == project.resolve()
+    # Without a backend in Settings, the environment names it.
+    saved["store"] = ""
+    assert tools._kb_env()["GRAPHIFY_KB_STORE"] == "memory"
+    assert GraphifyTools(workspace_root=lambda: str(project))._kb_env()["GRAPHIFY_KB_STORE"] == "memory"
 
 
 def test_snapshot_export_refuses_unsafe_files(tmp_path):
