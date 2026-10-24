@@ -9,13 +9,10 @@ import blockether.vis.extension as vis
 from vis_graphify.kb import (
     KBChange,
     KBIngestResult,
-    KBNode,
     KBPublishResult,
     KBReport,
-    KBSearchResult,
     KBServer,
     KBSnapshot,
-    KBSources,
 )
 from vis_graphify.tools import (
     BuildResult,
@@ -89,25 +86,54 @@ def status(result: GraphStatus) -> vis.ActivityPresentation:
     )
 
 
+def _hit_table(hits) -> vis.ActivityTable:
+    rows = tuple((hit.label, hit.kind, hit.cls, hit.source_file) for hit in hits)
+    return vis.ActivityTable(("Label", "Kind", "Class", "Source"), rows, paths=tuple(hit.source_file for hit in hits))
+
+
 def search(result: SearchResult) -> vis.ActivityPresentation:
-    if not result.nodes:
+    note = (vis.ActivityText(result.note),) if result.note else ()
+    if not result.nodes and not result.knowledge:
         return vis.ActivityPresentation(
-            "Search code graph", "no matches", (vis.ActivityText(f"No node matches {result.pattern!r}."),)
+            "Search graph", "no matches", (vis.ActivityText(f"Nothing matches {result.pattern!r}."),) + note
         )
     shown = f"{len(result.nodes)} of {result.total}" if result.total > len(result.nodes) else str(result.total)
+    word = "match" if result.total + len(result.knowledge) == 1 else "matches"
+    if not result.knowledge:
+        return vis.ActivityPresentation(
+            "Search graph", f"{shown} {word} for {result.pattern!r}", (_node_table(result.nodes),) + note
+        )
+    parts = ([f"{shown} code"] if result.nodes else []) + [f"{len(result.knowledge)} knowledge"]
+    content: list = [vis.ActivityHeading("Code"), _node_table(result.nodes)] if result.nodes else []
+    content += [vis.ActivityHeading(f"Knowledge in {result.source}"), _hit_table(result.knowledge)]
     return vis.ActivityPresentation(
-        "Search code graph", f"{shown} matches for {result.pattern!r}", (_node_table(result.nodes),)
+        "Search graph", f"{' and '.join(parts)} {word} for {result.pattern!r}", tuple(content) + note
     )
 
 
 def _edge_rows(edges) -> tuple[tuple[str, ...], ...]:
-    return tuple((edge.relation, edge.node.label, _where(edge.node)) for edge in edges)
+    # A knowledge node has no file: the knowledge is its location.
+    return tuple(
+        (edge.relation, edge.node.label, _where(edge.node) or ("knowledge" if edge.knowledge else "")) for edge in edges
+    )
 
 
 def explain(result: Explanation) -> vis.ActivityPresentation:
-    content: list = [
-        vis.ActivityText(f"{result.node.label} ({result.node.kind}) at {_where(result.node) or 'unknown location'}")
-    ]
+    node = result.node
+    where = _where(node)
+    if result.attributes:
+        # A knowledge node or document: its attributes and text come from the knowledge source.
+        head = f"{node.label} ({node.kind}) [{node.id}] in {result.source}" + (f", {where}" if where else "")
+    else:
+        head = f"{node.label} ({node.kind}) at {where or 'unknown location'}"
+    content: list = [vis.ActivityText(head)]
+    rows = tuple(
+        (key, _clip(str(value), 300)) for key, value in result.attributes.items() if key not in ("id", "label", "body")
+    )
+    if rows:
+        content.append(vis.ActivityTable(("Attribute", "Value"), rows))
+    if result.attributes.get("body"):
+        content += [vis.ActivityHeading("Text"), vis.ActivityText(_clip(str(result.attributes["body"]), 2000))]
     if result.outgoing:
         content += [
             vis.ActivityHeading("Outgoing"),
@@ -118,10 +144,14 @@ def explain(result: Explanation) -> vis.ActivityPresentation:
             vis.ActivityHeading("Incoming"),
             vis.ActivityTable(("Relation", "Node", "Location"), _edge_rows(result.incoming)),
         ]
+    if result.note:
+        content.append(vis.ActivityText(result.note))
+    known = sum(edge.knowledge for edge in result.outgoing + result.incoming)
+    extra = f", {_plural(known, 'knowledge edge')}" if known and not result.attributes else ""
     more = ", truncated" if result.truncated else ""
     return vis.ActivityPresentation(
-        "Explain code node",
-        f"{result.node.label}: {len(result.outgoing)} outgoing, {len(result.incoming)} incoming{more}",
+        "Explain node",
+        f"{node.label}: {len(result.outgoing)} outgoing, {len(result.incoming)} incoming{extra}{more}",
         tuple(content),
     )
 
@@ -322,33 +352,20 @@ def _kb_where(source: str, url: str) -> str:
     return f"{source} at {url}" if source and source != url else url or source
 
 
-def kb_server(result: KBServer) -> vis.ActivityPresentation:
+def serve(result: KBServer) -> vis.ActivityPresentation:
+    where = _kb_where(result.source, result.url)
+    if result.stopped:
+        return vis.ActivityPresentation("Stop knowledge base", f"stopped {where}", ())
     label = "Start knowledge base" if result.started else "Use knowledge base"
     mode = ", read-only" if result.read_only else ""
-    summary = (
-        f"{_kb_where(result.source, result.url)}{mode}: {result.nodes} nodes, {result.edges} edges, "
-        f"{_plural(result.documents, 'document')}"
-    )
+    summary = f"{where}{mode}: {result.nodes} nodes, {result.edges} edges, {_plural(result.documents, 'document')}"
     content = [vis.ActivityText(result.graph_path)] if result.graph_path else []
     if result.log_path:
         content.append(vis.ActivityText(f"Log: {result.log_path}"))
     return vis.ActivityPresentation(label, summary, tuple(content))
 
 
-def kb_stopped(result: KBServer) -> vis.ActivityPresentation:
-    return vis.ActivityPresentation("Stop knowledge base", f"stopped {_kb_where(result.source, result.url)}", ())
-
-
-def kb_sources(result: KBSources) -> vis.ActivityPresentation:
-    rows = tuple(("*" if row.current else "", row.source, row.kind, row.url, row.note) for row in result.sources[:50])
-    return vis.ActivityPresentation(
-        "List knowledge sources",
-        f"{_plural(len(result.sources), 'source')}, current {result.current}",
-        (vis.ActivityTable(("Current", "Source", "Kind", "Server", "Note"), rows),) if rows else (),
-    )
-
-
-def kb_snapshot(result: KBSnapshot) -> vis.ActivityPresentation:
+def snapshot(result: KBSnapshot) -> vis.ActivityPresentation:
     files = f", {_plural(result.assets, 'document file')}" if result.assets else ""
     summary = (
         f"{result.source} to {result.name}: {result.nodes} nodes, {result.edges} edges, "
@@ -357,39 +374,7 @@ def kb_snapshot(result: KBSnapshot) -> vis.ActivityPresentation:
     return vis.ActivityPresentation("Snapshot knowledge base", summary, (vis.ActivityText(result.path),))
 
 
-def kb_search(result: KBSearchResult) -> vis.ActivityPresentation:
-    if not result.hits:
-        return vis.ActivityPresentation(
-            "Search knowledge base", "no matches", (vis.ActivityText(f"Nothing matches {result.query!r}."),)
-        )
-    rows = tuple((hit.label, hit.kind, hit.cls, hit.source_file) for hit in result.hits)
-    return vis.ActivityPresentation(
-        "Search knowledge base",
-        f"{len(result.hits)} {'match' if len(result.hits) == 1 else 'matches'} for {result.query!r}"
-        + (f" in {result.source}" if result.source else ""),
-        (
-            vis.ActivityTable(
-                ("Label", "Kind", "Class", "Source"), rows, paths=tuple(h.source_file for h in result.hits)
-            ),
-        ),
-    )
-
-
-def kb_node(result: KBNode) -> vis.ActivityPresentation:
-    rows = tuple(
-        ("out" if e.direction == "out" else "in", e.relation, e.other_label, e.confidence) for e in result.edges[:50]
-    )
-    content: list = [vis.ActivityText(f"{result.id} ({'knowledge base' if result.kb else 'built'})")]
-    if rows:
-        content.append(vis.ActivityTable(("Direction", "Relation", "Node", "Confidence"), rows))
-    return vis.ActivityPresentation(
-        "Read knowledge node",
-        f"{result.label} ({result.cls}), {result.out_total} out, {result.in_total} in",
-        tuple(content),
-    )
-
-
-def kb_change(label: str):
+def change(label: str):
     def build(result: KBChange) -> vis.ActivityPresentation:
         rows = tuple(
             (str(r.get("id") or r.get("value") or ""), str(r.get("label") or r.get("title") or r.get("relation") or ""))
@@ -402,7 +387,7 @@ def kb_change(label: str):
     return build
 
 
-def kb_ingest(result: KBIngestResult) -> vis.ActivityPresentation:
+def ingest(result: KBIngestResult) -> vis.ActivityPresentation:
     summary = (
         f"{result.title} ({result.mode}): {_plural(len(result.linked), 'linked node')}, "
         f"{_plural(len(result.nodes_added), 'new node')}, {_plural(result.edges_added, 'new edge')}"
@@ -414,7 +399,7 @@ def kb_ingest(result: KBIngestResult) -> vis.ActivityPresentation:
     return vis.ActivityPresentation("Ingest document", summary, tuple(content))
 
 
-def kb_validate(result: KBReport) -> vis.ActivityPresentation:
+def validate(result: KBReport) -> vis.ActivityPresentation:
     summary = (
         f"{_plural(result.errors, 'error')}, {_plural(result.warnings, 'warning')}, {_plural(result.notes, 'note')}"
     )
@@ -427,7 +412,7 @@ def kb_validate(result: KBReport) -> vis.ActivityPresentation:
     return vis.ActivityPresentation("Validate knowledge base", summary, tuple(content))
 
 
-def kb_publish(result: KBPublishResult) -> vis.ActivityPresentation:
+def publish(result: KBPublishResult) -> vis.ActivityPresentation:
     return vis.ActivityPresentation("Publish knowledge base", f"{result.bytes} bytes", (vis.ActivityText(result.path),))
 
 

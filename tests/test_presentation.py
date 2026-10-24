@@ -11,6 +11,7 @@ from vis_graphify.tools import (
     CallEdit,
     DomainFinding,
     DomainReport,
+    Edge,
     Explanation,
     GraphifyTools,
     HubsResult,
@@ -68,7 +69,7 @@ def test_empty_states(tools, tmp_path_factory):
 
 
 def test_renderer_failure_and_start_show_arguments():
-    render = presentation.renderer("Explain code node", presentation.explain, ("node", "root"))
+    render = presentation.renderer("Explain node", presentation.explain, ("node", "root"))
     failed = render(phase="failure", args=(object(), "run"), kwargs={"root": "."}, error=ValueError("ambiguous"))
     assert failed.summary == "failed"
     texts = [getattr(block, "text", "") for block in failed.content]
@@ -79,24 +80,59 @@ def test_renderer_failure_and_start_show_arguments():
     assert render(phase="success", result=None) is None
 
 
-def test_kb_source_states():
-    from vis_graphify.kb import KBSnapshot, KBSourceInfo, KBSources
+def test_knowledge_states():
+    from vis_graphify.kb import KBHit, KBServer, KBSnapshot
 
-    note = "the store of the workspace root"
-    local = KBSourceInfo("local", "local", "http://127.0.0.1:5000", "/p/graphify-out/graph.json", True, note)
-    listed = presentation.kb_sources(KBSources((local,), "local"))
-    assert summary(listed) == "1 source, current local"
-    assert listed.content[0].rows == (("*", "local", "local", "http://127.0.0.1:5000", note),)
-    assert presentation.kb_sources(KBSources((), "local")).content == ()
     place = "graphify-out/snapshots/kb.example.com"
     snap = KBSnapshot("https://kb.example.com", place, f"/p/{place}", 7, 9, 3, 1, 2, "2025-01-01T00:00:00Z")
-    assert summary(presentation.kb_snapshot(snap)) == (
+    assert summary(presentation.snapshot(snap)) == (
         f"https://kb.example.com to {place}: 9 nodes, 3 edges, 1 document, 2 document files"
     )
-    render = presentation.renderer("Snapshot knowledge base", presentation.kb_snapshot, ("source", "name", "assets"))
+    render = presentation.renderer("Snapshot knowledge base", presentation.snapshot, ("source", "name", "assets"))
     failed = render(phase="failure", args=(object(), place), kwargs={}, error=ValueError("is a snapshot"))
     texts = [getattr(block, "text", "") for block in failed.content]
     assert failed.summary == "failed" and f"source={place!r}" in texts and "is a snapshot" in texts
+    # search: code and knowledge, knowledge alone, and the note of a source that did not answer.
+    node = Node("a", "run()", "src/a.py", 3, "function", None)
+    hit = KBHit("document", "d1", "Billing notes", "", "graphify-out/kb/documents/d1/body.md", 2.5)
+    both = presentation.search(SearchResult("bill", 1, (node,), knowledge=(hit,), source="local"))
+    assert summary(both) == "1 code and 1 knowledge matches for 'bill'"
+    assert [block.text for block in both.content[::2]] == ["Code", "Knowledge in local"]
+    assert both.content[3].rows == (("Billing notes", "document", "", "graphify-out/kb/documents/d1/body.md"),)
+    assert summary(presentation.search(SearchResult("bill", 0, (), knowledge=(hit,), source="local"))) == (
+        "1 knowledge match for 'bill'"
+    )
+    note = "No knowledge from https://kb.example.com: no answer"
+    missing = presentation.search(SearchResult("zzz", 0, (), source="https://kb.example.com", note=note))
+    assert summary(missing) == "no matches" and missing.content[-1].text == note
+    # explain: a document shows its attributes and text. A knowledge neighbour has no file.
+    other = Node("kb:x", "X", "", None, "knowledge", None)
+    document = Explanation(
+        Node("d1", "Billing notes", "", None, "document", None),
+        (Edge("links", node, "EXTRACTED", "", knowledge=True), Edge("links", other, "EXTRACTED", "", knowledge=True)),
+        (),
+        False,
+        attributes={"title": "Billing notes", "body": "Text", "tags": ["a"]},
+        source="local",
+    )
+    shown = presentation.explain(document)
+    assert summary(shown) == "Billing notes: 2 outgoing, 0 incoming"
+    assert shown.content[0].text == "Billing notes (document) [d1] in local"
+    assert shown.content[1].rows == (("title", "Billing notes"), ("tags", "['a']"))
+    assert [block.text for block in shown.content[2:4]] == ["Text", "Text"]
+    assert shown.content[-1].rows == (("links", "run()", "src/a.py:3"), ("links", "X", "knowledge"))
+    # serve: a started server, a running one and a stopped one.
+    server = KBServer("http://127.0.0.1:5000", "/p/graph.json", 7, 3, 1, 4, False, True, source="local")
+    assert (presentation.serve(server).headline, summary(presentation.serve(server))) == (
+        "Start knowledge base",
+        "local at http://127.0.0.1:5000: 7 nodes, 3 edges, 1 document",
+    )
+    used = presentation.serve(dataclasses.replace(server, started=False, read_only=True))
+    assert used.headline == "Use knowledge base" and used.summary.startswith(
+        "local at http://127.0.0.1:5000, read-only:"
+    )
+    stopped = presentation.serve(dataclasses.replace(server, stopped=True))
+    assert (stopped.headline, stopped.summary) == ("Stop knowledge base", "stopped local at http://127.0.0.1:5000")
 
 
 def _entry(monkeypatch):
@@ -119,10 +155,10 @@ def test_prompt_names_the_configured_knowledge_base_server(monkeypatch):
     assert extension.prompt({}) == module.PROMPT
     monkeypatch.setenv("GRAPHIFY_KB_URL", "KB.example.com/")
     assert extension.prompt({}).endswith(
-        "The configured server is https://kb.example.com. A kb_* call without source uses it,"
-        " until kb_use chooses another source."
+        "\nKnowledge comes from the configured server https://kb.example.com; the code stays local."
     )
-    # An invalid address adds nothing: the kb_* calls report it.
+    assert "kb_" not in module.PROMPT
+    # An invalid address adds nothing: the knowledge calls report it.
     monkeypatch.setenv("GRAPHIFY_KB_URL", "ftp://kb.example.com")
     assert extension.prompt({}) == module.PROMPT
 
@@ -148,7 +184,7 @@ def test_settings_name_the_server_and_keep_the_token_secret(monkeypatch):
     # The server in Settings wins over the environment.
     monkeypatch.setenv("GRAPHIFY_KB_URL", "other.example.com")
     saved.update(graphify_kb_url=" KB.example.com/ ", graphify_kb_token="t" * 20)
-    assert "The configured server is https://kb.example.com." in extension.prompt({})
+    assert "the configured server https://kb.example.com;" in extension.prompt({})
     assert module._kb_settings() == (" KB.example.com/ ", "t" * 20)
 
 
@@ -164,7 +200,7 @@ def test_hosts_without_string_settings_keep_the_environment(monkeypatch):
     (extension,) = registered
     assert module.SETTINGS == [] and module._kb_settings() == ("", "")
     monkeypatch.setenv("GRAPHIFY_KB_URL", "kb.example.com")
-    assert "The configured server is https://kb.example.com." in extension.prompt({})
+    assert "the configured server https://kb.example.com;" in extension.prompt({})
 
 
 def test_a_declaration_error_on_a_host_with_text_settings_fails_the_load(monkeypatch):
@@ -197,18 +233,13 @@ def test_extension_registers_every_tool_with_an_activity(monkeypatch):
             "move",
             "move_file",
             "domain",
-            "kb_serve",
-            "kb_stop",
-            "kb_use",
-            "kb_sources",
-            "kb_snapshot",
-            "kb_search",
-            "kb_node",
-            "kb_write",
-            "kb_ingest",
-            "kb_validate",
-            "kb_undo",
-            "kb_publish",
+            "serve",
+            "snapshot",
+            "write",
+            "ingest",
+            "validate",
+            "undo",
+            "publish",
         ]
     )
     for name in public:
@@ -219,12 +250,7 @@ def test_extension_registers_every_tool_with_an_activity(monkeypatch):
 def test_extension_reads_the_kb_token_in_a_masked_form(monkeypatch):
     module, _ = _entry(monkeypatch)
     vault, forgotten, asked = {"vis-secret:1": "kb-token-0123456789"}, [], []
-    monkeypatch.setattr(vis, "reveal", vault.get)
     monkeypatch.setattr(vis, "forget", forgotten.append)
-    assert module._kb_secret("kb-token-plain-0123") == "kb-token-plain-0123"
-    assert module._kb_secret("vis-secret:1") == "kb-token-0123456789"
-    with pytest.raises(ValueError, match="unknown or forgotten"):
-        module._kb_secret("vis-secret:2")
 
     class Answer(dict):
         def reveal(self, name):

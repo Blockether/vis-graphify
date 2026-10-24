@@ -108,7 +108,7 @@ def test_search_explain_path_hubs_affected(project):
 
 def test_result_text_is_one_line_per_row(project):
     tools = tools_for(project)
-    assert str(tools.search("db")).splitlines()[0] == "2 of 2 nodes match 'db':"
+    assert str(tools.search("db")).splitlines()[0] == "2 of 2 code nodes match 'db':"
     assert str(tools.affected("connect")).splitlines()[1].startswith("  1  calls      query()  src/app/db.clj:")
     assert str(tools.shortest_path("app.web/run", "connect")).endswith("-> connect()")
     assert str(tools.hubs(limit=1)).splitlines()[1].endswith("[src_app_core_run]")

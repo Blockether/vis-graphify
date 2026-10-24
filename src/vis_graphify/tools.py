@@ -24,7 +24,7 @@ import time
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Annotated, Callable
+from typing import Annotated, Any, Callable
 from urllib.parse import urlsplit
 
 from vis_graphify import graph as g
@@ -54,10 +54,11 @@ class Edge:
     relation: Annotated[str, "Edge type: calls, references, imports, contains, ..."]
     node: Annotated[Node, "The node at the other end."]
     confidence: Annotated[str, "EXTRACTED for parsed facts, INFERRED for guesses."]
-    at: Annotated[str, "Where the edge occurs, as `file:Lline`."]
+    at: Annotated[str, "Where the edge occurs, as `file:Lline`. Empty for knowledge."]
+    knowledge: Annotated[bool, "True for an edge of the knowledge, such as a note that mentions code."] = False
 
     def __str__(self) -> str:
-        return f"{self.relation} {self.node}"
+        return f"{self.relation} {self.node}" + (" (knowledge)" if self.knowledge else "")
 
 
 @dataclass(frozen=True)
@@ -95,33 +96,55 @@ class GraphStatus:
 
 @dataclass(frozen=True)
 class SearchResult:
-    """Nodes that match a pattern."""
+    """Code nodes, and knowledge nodes and documents, that match a pattern."""
 
-    pattern: Annotated[str, "The case-insensitive regex."]
-    total: Annotated[int, "Count of all matches."]
-    nodes: Annotated[tuple[Node, ...], "The best matches, labels first, then by degree."]
+    pattern: Annotated[str, "The pattern: a case-insensitive regex for code, plain words for knowledge."]
+    total: Annotated[int, "Count of all code matches."]
+    nodes: Annotated[tuple[Node, ...], "The best code matches, labels first, then by degree."]
+    knowledge: Annotated[
+        tuple[kb.KBHit, ...], "Knowledge nodes and documents that match, best first. Code nodes stay in `nodes`."
+    ] = ()
+    source: Annotated[str, "The knowledge source that answered: `local`, a folder or a server URL, else empty."] = ""
+    note: Annotated[str, "Why the knowledge part is missing, such as a server that does not answer, else empty."] = ""
 
     def __str__(self) -> str:
-        return _listing(f"{len(self.nodes)} of {self.total} nodes match {self.pattern!r}:", self.nodes, "nodes")
+        lines = []
+        if self.nodes or not self.knowledge:
+            lines.append(
+                _listing(f"{len(self.nodes)} of {self.total} code nodes match {self.pattern!r}:", self.nodes, "nodes")
+            )
+        if self.knowledge:
+            lines.append(
+                _listing(f"{len(self.knowledge)} knowledge matches in {self.source}:", self.knowledge, "knowledge")
+            )
+        if self.note:
+            lines.append(self.note)
+        return "\n".join(lines)
 
 
 @dataclass(frozen=True)
 class Explanation:
-    """One node with its direct neighbours."""
+    """One node with its direct neighbours: a code node, or a knowledge node or document."""
 
-    node: Annotated[Node, "The node that was asked about."]
-    outgoing: Annotated[tuple[Edge, ...], "Edges from the node: what it calls, references or contains."]
-    incoming: Annotated[tuple[Edge, ...], "Edges to the node: callers, importers, its container."]
+    node: Annotated[Node, "The node that was asked about. A knowledge node has its ontology class as `kind`."]
+    outgoing: Annotated[tuple[Edge, ...], "Edges from the node: what it calls, references, contains or links."]
+    incoming: Annotated[tuple[Edge, ...], "Edges to the node: callers, importers, its container, notes about it."]
     truncated: Annotated[bool, "True when `limit` cut either list."]
+    attributes: Annotated[
+        dict[str, Any], "Stored attributes of a knowledge node, such as the text of a document. Empty for code."
+    ] = dataclasses.field(default_factory=dict)
+    source: Annotated[str, "The knowledge source that answered: `local`, a folder or a server URL, else empty."] = ""
+    note: Annotated[str, "Why the knowledge part is missing, such as a server that does not answer, else empty."] = ""
 
     def __str__(self) -> str:
-        return "\n".join(
-            [
-                str(self.node),
-                _listing("Uses:", self.outgoing, "outgoing"),
-                _listing("Used by:", self.incoming, "incoming"),
-            ]
-        )
+        lines = [str(self.node)]
+        if self.attributes:
+            text = ", ".join(f"{key}={value!r}" for key, value in self.attributes.items())
+            lines.append(f"Attributes: {text if len(text) <= 600 else text[:599] + '…'}")
+        lines += [_listing("Uses:", self.outgoing, "outgoing"), _listing("Used by:", self.incoming, "incoming")]
+        if self.note:
+            lines.append(self.note)
+        return "\n".join(lines)
 
 
 @dataclass(frozen=True)
@@ -513,15 +536,14 @@ KB_EXPORT_FORMAT = "graphify-kb-export"
 class _KBSession:
     """The knowledge state of one Vis session.
 
-    `source` is the source of kb_use, or None for the default. `tokens` holds the checked token of each
-    server URL. `changes` holds the history numbers of the own changes of each source, oldest first.
-    `used` lists the keys of the sources of this session, for kb_sources.
+    `servers` maps each server URL that this session checked to its base URL after a redirect. `tokens` holds
+    the checked token of each base URL. `changes` holds the history numbers of the own changes of each
+    source, oldest first, so that undo reverts only them.
     """
 
-    source: str | None = None
+    servers: dict[str, str] = dataclasses.field(default_factory=dict)
     tokens: dict[str, str] = dataclasses.field(default_factory=dict, repr=False)
     changes: dict[str, list[tuple[int, ...]]] = dataclasses.field(default_factory=dict)
-    used: dict[str, None] = dataclasses.field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -529,7 +551,7 @@ class _KBSource:
     """One resolved knowledge source.
 
     `kind` is `local` (the store of the workspace root), `store` (another store on this machine),
-    `snapshot` (a copy from kb_snapshot) or `server` (a server URL). A store has its `graph` file,
+    `snapshot` (a copy from snapshot) or `server` (a server URL). A store has its `graph` file,
     a server its `url`. `key` names the source in the session state.
     """
 
@@ -578,6 +600,16 @@ def _kb_registry(graph: Path) -> dict | None:
     except (OSError, ValueError):
         return None
     return data if isinstance(data, dict) and isinstance(data.get("url"), str) else None
+
+
+def _kb_has_knowledge(graph: Path) -> bool:
+    """True when the store of a graph holds knowledge: edits in `kb/overlay.json`, documents, or a running server.
+
+    A server of this extension can hold a change that it did not save yet, so its store counts too.
+    """
+    store = graph.parent / "kb"
+    saved = (store / "overlay.json").is_file() or (store / "documents").is_dir()
+    return saved or (graph.parent / KB_REGISTRY).is_file()
 
 
 def _kb_write_json(path: Path, data) -> None:
@@ -792,6 +824,63 @@ def _edge(graph: g.Graph, link: g.Link, other: str) -> Edge:
     )
 
 
+def _end(graph: g.Graph, node_id: str, label: str) -> Node:
+    """The node at the other end of a knowledge edge. A code node keeps its file and line."""
+    return (
+        _node(graph, node_id)
+        if node_id in graph.nodes
+        else Node(node_id, label or node_id, "", None, "knowledge", None)
+    )
+
+
+def _kb_explanation(graph: g.Graph, known: kb.KBNode, limit: int) -> Explanation:
+    """An Explanation of a knowledge node, with all its edges."""
+    file = str(known.attributes.get("source_file") or "")
+    edges = {
+        direction: tuple(
+            Edge(edge.relation, _end(graph, edge.other, edge.other_label), edge.confidence, "", knowledge=edge.kb)
+            for edge in known.edges
+            if edge.direction == direction
+        )
+        for direction in ("out", "in")
+    }
+    return Explanation(
+        node=Node(known.id, known.label, "" if file == kb.SOURCE_FILE else file, None, known.cls, None),
+        outgoing=edges["out"],
+        incoming=edges["in"],
+        truncated=known.out_total > limit or known.in_total > limit,
+        attributes=dict(known.attributes),
+        source=known.source,
+    )
+
+
+KB_BODY_CHARS = 8000
+"""The longest document text in an explanation. A longer text ends there, and `body_chars` gives its length."""
+
+
+def _document_explanation(graph: g.Graph, answer: dict, source: str) -> Explanation:
+    """An Explanation of a knowledge document: its title, tags and text, and the nodes that it links."""
+    doc_id = str(answer.get("id") or "")
+    attributes = {key: answer[key] for key in ("title", "tags", "source", "updated_at") if answer.get(key)}
+    body = str(answer.get("body") or "")
+    if body:
+        attributes["body"] = body[:KB_BODY_CHARS]
+    if len(body) > KB_BODY_CHARS:
+        attributes["body_chars"] = len(body)
+    linked = [item for item in answer.get("linked") or () if isinstance(item, dict) and item.get("id")]
+    return Explanation(
+        node=Node(doc_id, str(answer.get("title") or doc_id), "", None, "document", None),
+        outgoing=tuple(
+            Edge("links", _end(graph, str(item["id"]), str(item.get("label") or "")), "EXTRACTED", "", knowledge=True)
+            for item in linked
+        ),
+        incoming=(),
+        truncated=False,
+        attributes=attributes,
+        source=source,
+    )
+
+
 def graphify_command() -> list[str]:
     """The argv prefix that runs the graphify CLI of this extension.
 
@@ -933,7 +1022,6 @@ class GraphifyTools:
         spawn: Callable[..., subprocess.Popen] | None = None,
         kb_actor: str = "agent",
         kb_ask_token: Callable[[str, Callable[[str], str | None]], str | None] | None = None,
-        kb_secret: Callable[[str], str] | None = None,
         kb_settings: Callable[[], tuple[str, str]] | None = None,
         kb_session: Callable[[], str] | None = None,
     ):
@@ -949,9 +1037,8 @@ class GraphifyTools:
         self._kb_procs: dict[str, subprocess.Popen] = {}
         self._kb_checked: dict[str, tuple[str, float]] = {}
         self._kb_lock = threading.RLock()
-        # kb_use: the masked token form and the reader of a host secret handle.
+        # The masked form that asks the person for a server token.
         self._kb_ask_token = kb_ask_token
-        self._kb_secret = kb_secret
         # The server and token text that the person saved in Settings; empty text means not set.
         self._kb_settings = kb_settings
 
@@ -1066,35 +1153,104 @@ class GraphifyTools:
             built,
         )
 
-    def search(self, pattern: str, root: str = ".", limit: int = 25) -> SearchResult:
-        """Find graph nodes whose label, id or file matches a case-insensitive regex.
+    def search(
+        self, pattern: str, root: str = ".", limit: int = 25, source: str | None = None, cls: str | None = None
+    ) -> SearchResult:
+        """Find code nodes, and knowledge nodes and documents, that match a pattern.
+
+        Code matches by label, id or file with a case-insensitive regex. Knowledge matches by the words in
+        labels, titles and text. A graph without knowledge gives only code, and starts no server.
 
         Args:
             pattern: Regex, for example `run-tests` or `gateway/.*client`. An invalid regex, such as `*out*`, matches as text.
             root: Project directory, relative to the workspace root.
-            limit: Maximum count of returned nodes.
+            limit: Maximum count of code nodes, and of knowledge matches.
+            source: Where the knowledge is: `local`, a store or snapshot folder, or a server URL. None uses the
+                configured server, else the store of the graph.
+            cls: Return only knowledge nodes of this ontology class or its subclasses, such as `concept`. Then
+                code nodes stay out.
         """
-        graph = self._graph(self._root(root))
-        ids, total = g.search(graph, pattern, limit)
-        return SearchResult(pattern, total, tuple(_node(graph, node_id) for node_id in ids))
+        path = self._root(root)
+        graph = self._graph(path)
+        ids, total = ([], 0) if cls else g.search(graph, pattern, limit)
+        nodes = tuple(_node(graph, node_id) for node_id in ids)
+        target, note = self._kb_knowledge(path, source)
+        if target is None:
+            return SearchResult(pattern, total, nodes, note=note)
+        query = {"q": pattern, "limit": limit, "class": cls}
+        try:
+            answer, _, target = self._kb_call(target, "GET", "/api/search", query=query)
+        except (kb.KBRequestError, OSError, RuntimeError) as error:
+            if source:
+                raise
+            return SearchResult(
+                pattern, total, nodes, source=target.name, note=f"No knowledge from {target.name}: {error}"
+            )
+        # The store also holds the code nodes of its graph; those already are in `nodes`.
+        hits = tuple(hit for hit in kb.search_hits(answer) if hit.kind == "document" or hit.id not in graph.nodes)
+        return SearchResult(pattern, total, nodes, knowledge=hits, source=target.name)
 
-    def explain(self, node: str, root: str = ".", limit: int = 40) -> Explanation:
-        """Show one node with what it calls and what calls or contains it.
+    def explain(self, node: str, root: str = ".", limit: int = 40, source: str | None = None) -> Explanation:
+        """Show one node with its direct neighbours: what it calls and what uses it, or a knowledge node or document.
+
+        A code node also gets the knowledge edges that reach it, such as a note that mentions it. A name
+        that no code node has goes to the knowledge.
 
         Args:
             node: Node id, label (`run-tests()`), bare name or a qualified name (`ns/name`, `module.name`, `Class.method`, `crate::m::name`) or `file::name`.
+                For knowledge, a node id, a document id or an exact label.
             root: Project directory, relative to the workspace root.
             limit: Maximum count of edges in each direction.
+            source: Where the knowledge is: `local`, a store or snapshot folder, or a server URL. None uses the
+                configured server, else the store of the graph.
         """
-        graph = self._graph(self._root(root))
-        node_id = g.resolve(graph, node)
+        path = self._root(root)
+        graph = self._graph(path)
+        try:
+            node_id = g.resolve(graph, node)
+        except g.NodeNotFound:
+            target, _ = self._kb_knowledge(path, source)
+            if target is None:
+                raise
+            try:
+                return self._kb_explain(target, graph, node, limit)
+            except kb.KBRequestError as error:
+                if error.status == 404:
+                    raise g.NodeNotFound(
+                        f"No code node and nothing in {target.name} matches {node!r}. Try graphify.search()."
+                    ) from None
+                raise g.NodeNotFound(
+                    f"No code node matches {node!r}, and {target.name} did not answer: {error}"
+                ) from None
         out = graph.outgoing.get(node_id, [])
         inc = graph.incoming.get(node_id, [])
+        outgoing = [_edge(graph, link, link.target) for link in out[:limit]]
+        incoming = [_edge(graph, link, link.source) for link in inc[:limit]]
+        truncated = len(out) > limit or len(inc) > limit
+        target, note = self._kb_knowledge(path, source)
+        name = ""
+        if target is not None:
+            name = target.name
+            try:
+                answer, _, target = self._kb_call(target, "GET", kb.node_path(node_id), query={"limit": limit})
+            except (kb.KBRequestError, OSError, RuntimeError) as error:
+                # 404: the knowledge has no record of this code node.
+                missing = isinstance(error, kb.KBRequestError) and error.status == 404
+                if source and not missing:
+                    raise
+                note = "" if missing else f"No knowledge from {target.name}: {error}"
+            else:
+                known = _kb_explanation(graph, kb.node_result(answer, source=target.name), limit)
+                outgoing += [edge for edge in known.outgoing if edge.knowledge]
+                incoming += [edge for edge in known.incoming if edge.knowledge]
+                truncated = truncated or known.truncated
         return Explanation(
             node=_node(graph, node_id),
-            outgoing=tuple(_edge(graph, link, link.target) for link in out[:limit]),
-            incoming=tuple(_edge(graph, link, link.source) for link in inc[:limit]),
-            truncated=len(out) > limit or len(inc) > limit,
+            outgoing=tuple(outgoing),
+            incoming=tuple(incoming),
+            truncated=truncated,
+            source=name,
+            note=note,
         )
 
     def shortest_path(self, source: str, target: str, root: str = ".") -> PathResult:
@@ -1212,7 +1368,7 @@ class GraphifyTools:
         check: `go vet`, `tsc --noEmit`, `cargo check`, `clj-kondo` or a Python syntax check.
         When a node gets a new id, its knowledge base records follow it, and `kb` reports
         the outcome. The project store `graphify-out/kb/` gets the new ids, and so does the
-        knowledge source of the session when it is another store or a server.
+        configured server in Settings or `$GRAPHIFY_KB_URL`.
 
         Args:
             node: The symbol: id, label or a qualified name (`ns/name`, `module.name`, `Class.method`, `crate::m::name`) or `file::name`.
@@ -1474,10 +1630,50 @@ class GraphifyTools:
             truncated=len(raw) > limit,
         )
 
-    # -- knowledge sources ---------------------------------------------------
-    # A knowledge source is `local` (the store of the workspace root), another store or a snapshot on
-    # this machine, or a server URL. Each kb_* call takes `source`; None is the source of the session.
-    # A store gets a `graphify kb serve` of this extension, so every source answers over one HTTP API.
+    # -- knowledge -------------------------------------------------------------
+    # Knowledge lives in a source: `local` (the store of the workspace root), another store or a snapshot
+    # on this machine, or a server URL. Each knowledge call takes `source`; None is the configured server,
+    # else `local`. A store gets a `graphify kb serve` of this extension, so every source answers over one
+    # HTTP API.
+
+    def _kb_knowledge(self, path: Path, source: str | None) -> tuple[_KBSource | None, str]:
+        """The knowledge source of search and explain, else None with the reason when there is one.
+
+        A given source always counts, and so does the configured server. Else the store of the graph counts
+        when it holds knowledge, so a graph without knowledge starts no server.
+        """
+        if source:
+            return self._kb_source(source), ""
+        try:
+            configured = self._kb_configured()[0]
+        except ValueError as error:
+            return None, f"No knowledge: {error}"
+        if configured:
+            return self._kb_source(configured), ""
+        graph = g.graph_path(path).resolve()
+        return (self._kb_source(str(graph)), "") if _kb_has_knowledge(graph) else (None, "")
+
+    def _kb_explain(self, target: _KBSource, graph: g.Graph, node: str, limit: int) -> Explanation:
+        """A knowledge node or document as an Explanation: by node id, document id, then exact label.
+
+        Raises KBRequestError with status 404 when the source has none of them.
+        """
+        lookups = (
+            (kb.node_path(node), {"limit": limit}),
+            (kb.document_path(node), None),
+            ("/api/nodes", {"label": node}),
+        )
+        for path, query in lookups:
+            try:
+                answer, _, target = self._kb_call(target, "GET", path, query=query)
+            except kb.KBRequestError as error:
+                if error.status == 404:
+                    continue
+                raise
+            if query is None:
+                return _document_explanation(graph, answer, target.name)
+            return _kb_explanation(graph, kb.node_result(answer, source=target.name), limit)
+        raise kb.KBRequestError(f"{target.name} has no node or document {node!r}.", 404)
 
     def _kb_state(self) -> _KBSession:
         """The knowledge state of the calling session. Outside Vis, one state serves all calls."""
@@ -1509,11 +1705,11 @@ class GraphifyTools:
         return url, token.strip() or None, place
 
     def _kb_source(self, source: str | None = None) -> _KBSource:
-        """Resolve a source. None is the source of the session: kb_use, else the configured server, else `local`.
+        """Resolve a source. None is the configured server, else `local`.
 
         Only a text with http:// or https:// is a server. Any other text is a path, relative to the workspace root.
         """
-        text = str(source or "").strip() or self._kb_state().source or self._kb_configured()[0] or "local"
+        text = str(source or "").strip() or self._kb_configured()[0] or "local"
         if text.lower().startswith(("http://", "https://")):
             url = kb.normalize_url(text)
             return _KBSource(name=url, kind="server", key=url, url=url)
@@ -1529,7 +1725,7 @@ class GraphifyTools:
         return _KBSource(name=name, kind=kind, key=str(graph), graph=graph)
 
     def _kb_token(self, url: str) -> str | None:
-        """The token for a server: the one that kb_use checked in this session, else the configured one for its server."""
+        """The token for a server: the one that this session checked, else the configured one for its server."""
         token = self._kb_state().tokens.get(url)
         if token:
             return token
@@ -1537,10 +1733,18 @@ class GraphifyTools:
         return configured_token if url == configured else None
 
     def _kb_client(self, source: _KBSource, timeout_s: float = 60.0) -> kb.KBClient:
-        """A client for a source. A store gets its server first: the running one, else a new one."""
+        """A client for a source. A store gets its server first: the running one, else a new one.
+
+        A server gets one check in each session, which follows a redirect on the same host. When it needs a
+        token that this session does not have, a masked form asks the person for it.
+        """
         if source.graph is None:
-            token = self._kb_token(source.url)
-            return kb.KBClient(url=source.url, token=token, actor=self._kb_actor, timeout_s=timeout_s)
+            state = self._kb_state()
+            base = state.servers.get(source.url)
+            if base is None:
+                base = self._kb_connect(source.url, min(timeout_s, 30.0))
+                state.servers[source.url] = base
+            return kb.KBClient(url=base, token=self._kb_token(base), actor=self._kb_actor, timeout_s=timeout_s)
         url = self._kb_store_url(source)
         return kb.KBClient(url=url, token=_kb_store_token(url), actor=self._kb_actor, timeout_s=timeout_s)
 
@@ -1556,28 +1760,36 @@ class GraphifyTools:
         """Send one request to a source. Returns the answer, the client and the resolved source.
 
         When the server of a store stops answering, the next call checks it again and starts a new one.
-        A read runs once more at once. A write does not, because it can have reached the server.
+        A read runs once more at once. A write does not, because it can have reached the server. A server
+        that refuses the token of this session gets a new check, so the form can ask again, and the call runs
+        once more: a refused call changes nothing.
         """
         target = source if isinstance(source, _KBSource) else self._kb_source(source)
         if method != "GET" and target.kind == "snapshot":
             raise ValueError(
                 f"{target.name} is a read-only snapshot. Write to the source that it copies, "
-                "then copy that source again with kb_snapshot."
+                "then copy that source again with graphify.snapshot."
             )
-        self._kb_state().used[target.key] = None
         client = self._kb_client(target, timeout_s)
         try:
             return client.request(method, path, body, query), client, target
         except kb.KBRequestError as error:
-            if target.graph is None or error.status:
+            if target.graph is None:
+                if error.status != 401:
+                    raise
+                state = self._kb_state()
+                state.tokens.pop(client.url, None)
+                state.servers.pop(target.url, None)
+            elif error.status:
                 raise
-            self._kb_checked.pop(target.key, None)
-            if method != "GET":
-                raise kb.KBRequestError(
-                    f"The server of {target.name} stopped during {method} {path}, so the change can be applied "
-                    "or not. Check it with kb_search or kb_node before you send it again. The next call starts "
-                    "a new server."
-                ) from None
+            else:
+                self._kb_checked.pop(target.key, None)
+                if method != "GET":
+                    raise kb.KBRequestError(
+                        f"The server of {target.name} stopped during {method} {path}, so the change can be "
+                        "applied or not. Check it with graphify.search or graphify.explain before you send it "
+                        "again. The next call starts a new server."
+                    ) from None
         client = self._kb_client(target, timeout_s)
         return client.request(method, path, body, query), client, target
 
@@ -1678,9 +1890,9 @@ class GraphifyTools:
         """Send the new ids of moved nodes to the knowledge stores. One line for each, never an error.
 
         The store of the project, `graphify-out/kb/`, gets them through `graphify kb move`. Its server sees
-        them too: each write of a store first loads the writes of other processes. The source of the session
-        gets them as well when it is another store or a server, unless that server serves the project store.
-        A snapshot is a copy, so it gets nothing: the next kb_snapshot copies the moved records.
+        them too: each write of a store first loads the writes of other processes. The configured server gets
+        them as well, unless it serves the project store. A snapshot is a copy, so it gets nothing: the next
+        snapshot copies the moved records.
         """
         if not moved:
             return ()
@@ -1692,12 +1904,8 @@ class GraphifyTools:
         try:
             target = self._kb_source(None)
         except (ValueError, OSError) as error:
-            return (*lines, f"knowledge source: not updated: {error}")
-        if target.kind in ("local", "snapshot") or target.graph == graph_file:
-            return tuple(lines)
+            return (*lines, f"configured server: not updated: {error}")
         if target.graph is not None:
-            if (target.graph.parent / "kb" / "overlay.json").is_file():
-                lines.append(self._kb_move_store(path, target.graph, ops))
             return tuple(lines)
         line = self._kb_move_server(target, graph_file, ops)
         return (*lines, line) if line else tuple(lines)
@@ -1739,40 +1947,44 @@ class GraphifyTools:
             return _kb_outcome(source.name, results, str(error))
         return _kb_outcome(source.name, results)
 
-    def kb_serve(
+    def serve(
         self,
         source: str = "local",
         port: int | None = None,
         host: str | None = None,
         read_only: bool | None = None,
+        stop: bool = False,
         timeout_s: int = 120,
     ) -> kb.KBServer:
         """Start the server of a knowledge store on this machine, or use the one that runs. Gives its admin UI URL.
 
         The server is `graphify kb serve`: an HTTP API and an admin UI in the browser. People and agents
-        edit the same store there, and each change is undoable. The kb_* calls start this server themselves,
-        so call kb_serve to give a person the URL, or to choose the port, the address or read-only mode.
-        The server keeps running after the session; kb_stop stops it.
+        edit the same store there, and each change is undoable. The knowledge calls start this server
+        themselves, so call serve to give a person the URL, or to choose the port, the address or read-only
+        mode. The server keeps running after the session. `stop=True` stops it, also after a gateway restart.
 
         Args:
             source: `local` for the store of the workspace root, or the path of another store or snapshot.
             port: TCP port. None keeps the port of the running server, else takes a free port.
             host: Address of this machine to bind. None keeps the address of the running server, else uses
                 127.0.0.1. Off loopback, the server needs `$GRAPHIFY_KB_TOKEN` with at least 16 characters,
-                and the kb_* calls send that token.
+                and the knowledge calls send that token.
             read_only: Refuse all writes. None keeps the mode of the running server. A snapshot is always read-only.
+            stop: Stop the server of the store instead. It writes the pending changes first.
             timeout_s: Stop waiting for a new server after this many seconds.
         """
+        if stop:
+            return self._kb_stop(source)
         target = self._kb_source(source)
         if target.graph is None:
             raise ValueError(
-                f"{target.name} is a server already. kb_serve starts the server of a store on this machine. "
-                f"Use kb_use({target.name!r})."
+                f"{target.name} is a server already. serve starts the server of a store on this machine. "
+                f"Give source={target.name!r} to the other calls."
             )
         if host is not None and not _local_host(host):
             raise ValueError(
-                f"kb_serve starts a server on this machine, and {host} is not one of its addresses. "
-                "Use kb_use for a server elsewhere."
+                f"serve starts a server on this machine, and {host} is not one of its addresses. "
+                "Give a server elsewhere as source=... to the other calls."
             )
         if target.kind == "snapshot":
             read_only = True
@@ -1791,7 +2003,7 @@ class GraphifyTools:
                 if asked:
                     raise RuntimeError(
                         f"{target.name} has a server at {url} already. Stop it with "
-                        f"graphify.kb_stop({target.name!r}), then start it with {' and '.join(asked)}."
+                        f"graphify.serve({target.name!r}, stop=True), then start it with {' and '.join(asked)}."
                     )
                 pid = (_kb_registry(target.graph) or {}).get("pid")
                 return kb.server(health, stats, url, started=False, pid=pid, source=target.name)
@@ -1801,13 +2013,10 @@ class GraphifyTools:
         pid = self._kb_procs[target.key].pid
         return kb.server(health, stats, url, started=True, pid=pid, log=log, source=target.name)
 
-    def kb_stop(self, source: str = "local") -> kb.KBServer:
+    def _kb_stop(self, source: str) -> kb.KBServer:
         """Stop the server that this extension started for a knowledge store. The server writes pending changes first.
 
         This works also after a restart of the gateway: the file `kb-serve.json` next to the graph names the server.
-
-        Args:
-            source: `local` for the store of the workspace root, or the path of another store or snapshot.
         """
         target = self._kb_source(source)
         if target.graph is None:
@@ -1837,89 +2046,28 @@ class GraphifyTools:
         stopped = kb.server(health, stats, url, started=False, pid=pid or None, source=target.name)
         return dataclasses.replace(stopped, stopped=True)
 
-    def kb_use(self, source: str | None = None, token: str | None = None, timeout_s: float = 30.0) -> kb.KBServer:
-        """Make a knowledge source the source of this session. The later kb_* calls without `source` use it.
-
-        Checks that the source answers. A store on this machine gets its server, as with kb_serve. A server
-        gets its token: `token`, else the configured token for the configured server, else a masked form asks
-        the person. The token stays in memory, never shows in a result and serves only this session. Code
-        tools keep reading the local tree-sitter graph; rename, move and move_file also send moved ids here.
-
-        Args:
-            source: `local` for the store of the workspace root, the path of another store or snapshot, or a
-                server URL, such as `https://kb.example.com`. None goes back to the default: the server in
-                Settings, else `$GRAPHIFY_KB_URL`, else `local`.
-            token: The server token (its password), or a secret handle that the host can read. Prefer the
-                form: a token in the call shows in the conversation.
-            timeout_s: Stop waiting for each answer after this many seconds.
-        """
-        text = str(source or "").strip()
-        target = self._kb_source(text or self._kb_configured()[0] or "local")
-        started, pid, log = False, None, ""
-        if target.graph is not None:
-            if token:
-                raise ValueError(f"{target.name} is a store on this machine. It needs no token.")
-            with self._kb_lock:
-                running = self._kb_running(target)
-                if running:
-                    url, health, stats = running
-                    pid = (_kb_registry(target.graph) or {}).get("pid")
-                else:
-                    url, health, stats, log = self._kb_start(target)
-                    started, pid = True, self._kb_procs[target.key].pid
-        else:
-            url, health, stats = self._kb_connect(target.url, token, timeout_s)
-            target = self._kb_served_store(url, stats) or _KBSource(name=url, kind="server", key=url, url=url)
-            if target.graph is not None:
-                pid = (_kb_registry(target.graph) or {}).get("pid")
-        state = self._kb_state()
-        # A store keeps its absolute path: a later draft can move the workspace root.
-        state.source = (target.name if target.graph is None or target.kind == "local" else target.key) if text else None
-        state.used[target.key] = None
-        return kb.server(health, stats, url, started=started, pid=pid, log=log, source=target.name)
-
-    def _kb_served_store(self, url: str, stats: dict) -> _KBSource | None:
-        """The store behind a loopback server that this extension started, else None.
-
-        Such a server gets a new port at each start, so the session keeps the store and not the URL.
-        """
-        served = str(stats.get("graph") or "")
-        if not served or not kb.is_loopback_url(url):
-            return None
-        graph = Path(served).resolve()
-        entry = _kb_registry(graph)
-        if entry is None or entry.get("url") != url:
-            return None
-        try:
-            return self._kb_source(str(graph))
-        except (ValueError, OSError):
-            return None
-
-    def _kb_connect(self, base: str, token: str | None, timeout_s: float) -> tuple[str, dict, dict]:
-        """Check a server and its token. Returns the base URL after a redirect on the same host, health and stats."""
+    def _kb_connect(self, base: str, timeout_s: float) -> str:
+        """Check a server and its token. Returns the base URL after a redirect on the same host."""
         configured, configured_token, place = self._kb_configured(strict=False)
         # The configured token goes only to the configured server, also after its move to https.
         fallback = configured_token if base == configured else None
-        given = self._kb_given(token)
         state = self._kb_state()
         client = kb.KBClient(url=base, actor=self._kb_actor, timeout_s=timeout_s)
         try:
-            health = client.request("GET", "/api/health")
+            client.request("GET", "/api/health")
         except kb.KBRequestError as error:
             moved = _moved_base(base, error)
             if moved is None:
                 raise
             base = client.url = moved
-            health = client.request("GET", "/api/health")
+            client.request("GET", "/api/health")
         earlier = state.tokens.get(base)
-        client.token = given or earlier or fallback
+        client.token = earlier or fallback
         try:
-            stats = client.request("GET", "/api/stats")
+            client.request("GET", "/api/stats")
         except kb.KBRequestError as error:
             if error.status != 401:
                 raise
-            if given:
-                raise kb.KBRequestError(f"The server at {base} refused the token.", 401) from None
             token_place = "Settings" if place == "Settings" else "GRAPHIFY_KB_TOKEN"
             if earlier:
                 refused = "refused the token of this session"
@@ -1932,22 +2080,15 @@ class GraphifyTools:
             client.token = self._kb_ask(base, client)
             if not client.token:
                 raise kb.KBRequestError(
-                    f"The server at {base} {refused}. Give token=..., or save the server and its token in Settings.",
+                    f"The server at {base} {refused}. Save the server and its token in Settings, or give it in the form.",
                     401,
                 ) from None
-            stats = client.request("GET", "/api/stats")
+            client.request("GET", "/api/stats")
         if client.token:
             state.tokens[base] = client.token
         else:
             state.tokens.pop(base, None)
-        return base, health, stats
-
-    def _kb_given(self, token: str | None) -> str | None:
-        """The token argument, after the host reads a secret handle in it. None for no token."""
-        text = str(token or "").strip()
-        if not text:
-            return None
-        return self._kb_secret(text).strip() if self._kb_secret else text
+        return base
 
     def _kb_ask(self, base: str, client: kb.KBClient) -> str | None:
         """Ask the person for the token in a masked form. The form checks each try with the server."""
@@ -1964,71 +2105,17 @@ class GraphifyTools:
         token = self._kb_ask_token(base, check)
         return token.strip() if token else None
 
-    def kb_sources(self) -> kb.KBSources:
-        """The knowledge sources of this session, and the source that the kb_* calls use without `source`.
-
-        Lists `local` (the store of the workspace root), the snapshots in `graphify-out/snapshots/`, the
-        configured server and the other sources of this session. A store shows the URL of its running
-        server. A server elsewhere is not checked.
-        """
-        state = self._kb_state()
-        root = Path(self._workspace_root()).resolve()
-        current = self._kb_source(None)
-        rows: dict[str, kb.KBSourceInfo] = {}
-
-        def add(target: _KBSource, note: str) -> None:
-            if target.name in rows:
-                return
-            url = target.url
-            if target.graph is not None:
-                running = self._kb_running(target) if target.graph.is_file() else None
-                url = running[0] if running else ""
-            rows[target.name] = kb.KBSourceInfo(
-                source=target.name,
-                kind=target.kind,
-                url=url,
-                path=str(target.graph or ""),
-                current=target.key == current.key,
-                note=note,
-            )
-
-        add(self._kb_source("local"), "the store of the workspace root")
-        snapshots = root / g.GRAPH_DIR / KB_SNAPSHOTS
-        for folder in sorted(snapshots.iterdir()) if snapshots.is_dir() else ():
-            if folder.name.startswith(".") or not (folder / g.GRAPH_FILE).is_file():
-                continue
-            try:
-                meta = json.loads((folder / KB_SNAPSHOT_FILE).read_text(encoding="utf-8"))
-            except (OSError, ValueError):
-                meta = {}
-            copied = f"a copy of {meta.get('source') or 'another source'}"
-            add(
-                self._kb_source(str(folder)),
-                f"{copied} from {meta.get('taken_at')}" if meta.get("taken_at") else copied,
-            )
-        configured, _, place = self._kb_configured(strict=False)
-        if configured:
-            add(self._kb_source(configured), f"the server in {place}")
-        for key in list(state.used):
-            try:
-                add(self._kb_source(key), "used in this session")
-            except (ValueError, OSError):
-                continue
-        add(current, "the source of this session")
-        return kb.KBSources(sources=tuple(rows.values()), current=current.name)
-
-    def kb_snapshot(
+    def snapshot(
         self, source: str | None = None, name: str | None = None, assets: bool = False, timeout_s: float = 600.0
     ) -> kb.KBSnapshot:
         """Copy a knowledge source into `graphify-out/snapshots/<name>/` of the workspace root.
 
-        The copy holds the graph, the ontology, the knowledge records and the documents. Read it without the
-        server: give its folder as `source`, or make it the source of the session with kb_use. A snapshot is
-        read-only. A new snapshot with the same name replaces the old one. Code tools keep reading the local
-        tree-sitter graph.
+        The copy holds the graph, the ontology, the knowledge records and the documents. Give its folder as
+        `source` to read it without the server. A snapshot is read-only. A new snapshot with the same name
+        replaces the old one. The code questions keep reading the local tree-sitter graph.
 
         Args:
-            source: The source to copy, usually a server URL. None copies the source of the session.
+            source: The source to copy, usually a server URL. None copies the configured server, else `local`.
             name: Folder name of the snapshot. None uses the host and port of a server, or the project of a store.
             assets: Also copy the files of the documents, such as images and PDFs.
             timeout_s: Stop waiting for the source after this many seconds.
@@ -2083,45 +2170,12 @@ class GraphifyTools:
             taken_at=meta["taken_at"],
         )
 
-    def kb_search(
-        self, query: str, source: str | None = None, limit: int = 20, cls: str | None = None
-    ) -> kb.KBSearchResult:
-        """Search the nodes and documents of a knowledge source by label, id, title and text.
-
-        Args:
-            query: Plain words, not a regex.
-            source: `local`, a store or snapshot path, or a server URL. None uses the source of the session.
-            limit: Maximum count of matches.
-            cls: Return only nodes of this ontology class or its subclasses, such as `concept` or `code`.
-        """
-        answer, _, target = self._kb_call(
-            source, "GET", "/api/search", query={"q": query, "limit": limit, "class": cls}
-        )
-        return kb.search_result(query, answer, source=target.name)
-
-    def kb_node(self, node: str, source: str | None = None, limit: int = 50) -> kb.KBNode:
-        """One knowledge node with its class, attributes and edges.
-
-        Args:
-            node: Node id, or an exact label when no node has that id.
-            source: `local`, a store or snapshot path, or a server URL. None uses the source of the session.
-            limit: Maximum count of edges in each direction.
-        """
-        target = self._kb_source(source)
-        try:
-            answer, _, target = self._kb_call(target, "GET", kb.node_path(node), query={"limit": limit})
-        except kb.KBRequestError as error:
-            if error.status != 404:
-                raise
-            answer, _, target = self._kb_call(target, "GET", "/api/nodes", query={"label": node})
-        return kb.node_result(answer, source=target.name)
-
     def _kb_remember(self, target: _KBSource, seqs: tuple[int, ...]) -> None:
-        """Keep the history numbers of an own change, so that kb_undo reverts this change and not the change of another person."""
+        """Keep the history numbers of an own change, so that undo reverts this change and not the change of another person."""
         if seqs:
             self._kb_state().changes.setdefault(target.key, []).append(tuple(seqs))
 
-    def kb_write(self, ops: list[dict], source: str | None = None) -> kb.KBChange:
+    def write(self, ops: list[dict], source: str | None = None) -> kb.KBChange:
         """Apply operations to a knowledge source as one undoable change. One failure applies nothing.
 
         Each operation is a dict with an `op` key:
@@ -2139,7 +2193,7 @@ class GraphifyTools:
 
         Args:
             ops: The operations, in order. At most 10000.
-            source: `local`, a store path or a server URL. None uses the source of the session.
+            source: `local`, a store path or a server URL. None uses the configured server, else `local`.
         """
         if not isinstance(ops, (list, tuple)) or not ops:
             raise ValueError("ops must be a non-empty list of operation dicts.")
@@ -2149,7 +2203,7 @@ class GraphifyTools:
         summary = ", ".join(f"{count} {name}" for name, count in names.items())
         return kb.change_result(f"Applied {summary}", answer, source=target.name, seqs=client.changes)
 
-    def kb_ingest(
+    def ingest(
         self,
         path: str,
         source: str | None = None,
@@ -2169,7 +2223,7 @@ class GraphifyTools:
 
         Args:
             path: A file path relative to the workspace root, an http(s) URL, or the document name when `text` is set.
-            source: `local`, a store path or a server URL. None uses the source of the session.
+            source: `local`, a store path or a server URL. None uses the configured server, else `local`.
             mode: `text` or `llm`.
             title: Document title. None uses the file name or the first heading.
             tags: Document tags.
@@ -2195,11 +2249,11 @@ class GraphifyTools:
         self._kb_remember(target, client.changes)
         return kb.ingest_result(answer, source=target.name)
 
-    def kb_validate(self, source: str | None = None, limit: int = 50, info: bool = False) -> kb.KBReport:
+    def validate(self, source: str | None = None, limit: int = 50, info: bool = False) -> kb.KBReport:
         """Check a knowledge source against its ontology: missing properties, bad edge ends, orphans, cycles.
 
         Args:
-            source: `local`, a store or snapshot path, or a server URL. None uses the source of the session.
+            source: `local`, a store or snapshot path, or a server URL. None uses the configured server, else `local`.
             limit: Maximum count of returned findings. The counts stay complete.
             info: Also return info findings, such as orphan nodes.
         """
@@ -2207,14 +2261,14 @@ class GraphifyTools:
         answer, _, target = self._kb_call(source, "GET", "/api/validate", query=query)
         return kb.report_result(answer, source=target.name)
 
-    def kb_undo(self, source: str | None = None, seq: int | None = None) -> kb.KBChange:
+    def undo(self, source: str | None = None, seq: int | None = None) -> kb.KBChange:
         """Revert the latest change of this session in a knowledge source, or the change with history number `seq`.
 
-        Without `seq`, it reverts the latest kb_write or kb_ingest of this session that is not reverted yet,
+        Without `seq`, it reverts the latest write or ingest of this session that is not reverted yet,
         also on a server that other people edit. A change of several steps is reverted newest step first.
 
         Args:
-            source: `local`, a store path or a server URL. None uses the source of the session.
+            source: `local`, a store path or a server URL. None uses the configured server, else `local`.
             seq: History number of a change, such as a number from the history of the admin UI. None reverts
                 the latest change of this session.
         """
@@ -2232,16 +2286,14 @@ class GraphifyTools:
             own[:] = [kept for group in own if (kept := tuple(s for s in group if s != step))]
         return kb.change_result("Undo", answer, source=target.name)
 
-    def kb_publish(
-        self, source: str | None = None, path: str | None = None, timeout_s: int = 300
-    ) -> kb.KBPublishResult:
+    def publish(self, source: str | None = None, path: str | None = None, timeout_s: int = 300) -> kb.KBPublishResult:
         """Write a static HTML view of a knowledge source on this machine. It opens without a server.
 
         A store gets the page in its own output folder. A server first sends a copy of its store, and the
         page goes into `graphify-out/` of the workspace root.
 
         Args:
-            source: `local`, a store or snapshot path, or a server URL. None uses the source of the session.
+            source: `local`, a store or snapshot path, or a server URL. None uses the configured server, else `local`.
             path: An `.html` file name without folders. None writes `kb.html` for a store, or
                 `kb-<host>.html` for a server.
             timeout_s: Stop waiting for graphify after this many seconds.

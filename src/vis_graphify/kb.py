@@ -25,6 +25,9 @@ ACTOR_HEADER = "X-Graphify-Actor"
 CHANGE_HEADER = "X-Graphify-KB-Change"
 """The server names the history numbers of the change of a write in this header, such as `12` or `12,13`."""
 
+SOURCE_FILE = "kb"
+"""The `source_file` of a node that the knowledge base added without a file. graphify calls it `KB_SOURCE`."""
+
 
 class KBRequestError(RuntimeError):
     """The knowledge base server refused a request or did not answer."""
@@ -47,7 +50,9 @@ class KBServer:
     version: Annotated[int, "Change counter of the server."]
     read_only: Annotated[bool, "True when the server refuses writes."]
     started: Annotated[bool, "True when this call started the server, False when it was already running."]
-    stopped: Annotated[bool, "True when kb_stop stopped the server. The counts are from just before the stop."] = False
+    stopped: Annotated[
+        bool, "True when serve(stop=True) stopped the server. The counts are from just before the stop."
+    ] = False
     pid: Annotated[int | None, "Process id of a server that this extension started, else None."] = None
     log_path: Annotated[str, "Log file of a server that this extension started, else empty."] = ""
     source: Annotated[str, "Knowledge source of the result: `local`, a store path or a server URL."] = ""
@@ -86,23 +91,6 @@ class KBHit:
     def __str__(self) -> str:
         where = f" {self.source_file}" if self.source_file else ""
         return f"{self.label} ({self.kind}, {self.cls or '-'}){where} [{self.id}]"
-
-
-@dataclass(frozen=True)
-class KBSearchResult:
-    """Nodes and documents that match a query."""
-
-    query: Annotated[str, "The query text."]
-    hits: Annotated[tuple[KBHit, ...], "Best matches first."]
-    source: Annotated[str, "Knowledge source of the result: `local`, a store path or a server URL."] = ""
-
-    def __str__(self) -> str:
-        where = self.source or "the knowledge base"
-        if not self.hits:
-            return f"Nothing in {where} matches {self.query!r}."
-        lines = [f"{len(self.hits)} {'match' if len(self.hits) == 1 else 'matches'} for {self.query!r} in {where}:"]
-        lines += [str(hit) for hit in self.hits]
-        return "\n".join(lines)
 
 
 @dataclass(frozen=True)
@@ -158,7 +146,7 @@ class KBChange:
     def __str__(self) -> str:
         if self.undone is not None:
             return f"Undid change {self.undone}: {self.summary} (version {self.version})."
-        undo = f"graphify.kb_undo(source={self.source!r})" if self.source else "graphify.kb_undo()"
+        undo = f"graphify.undo(source={self.source!r})" if self.source else "graphify.undo()"
         return f"{self.summary} (version {self.version}). {undo} reverts it."
 
 
@@ -233,37 +221,6 @@ class KBPublishResult:
 
 
 @dataclass(frozen=True)
-class KBSourceInfo:
-    """One knowledge source that the kb_* tools can use."""
-
-    source: Annotated[str, "Give this value as `source`: `local`, a store or snapshot path, or a server URL."]
-    kind: Annotated[str, "`local`, `store`, `snapshot` or `server`."]
-    url: Annotated[str, "URL of the server, or empty when no server runs for the store."]
-    path: Annotated[str, "Absolute path of the graph.json of a store or a snapshot, else empty."]
-    current: Annotated[bool, "True for the source of this session."]
-    note: Annotated[str, "Where the source comes from."]
-
-    def __str__(self) -> str:
-        mark = "*" if self.current else "-"
-        served = f" at {self.url}" if self.url and self.url != self.source else ""
-        return f"{mark} {self.source} ({self.kind}{served}): {self.note}"
-
-
-@dataclass(frozen=True)
-class KBSources:
-    """The knowledge sources of the workspace and of this session."""
-
-    sources: Annotated[tuple[KBSourceInfo, ...], "The local store first, then snapshots, then servers."]
-    current: Annotated[str, "The source of this session. The kb_* tools use it when a call gives no source."]
-
-    def __str__(self) -> str:
-        lines = [f"{len(self.sources)} knowledge sources. * marks the source of this session:"]
-        lines += [str(row) for row in self.sources]
-        lines.append("Give one as source=..., or make it the source of the session with graphify.kb_use(source).")
-        return "\n".join(lines)
-
-
-@dataclass(frozen=True)
 class KBSnapshot:
     """A local, read-only copy of a knowledge source."""
 
@@ -298,7 +255,9 @@ def normalize_url(url: str) -> str:
         text = ("http://" if is_loopback_url("http://" + text) else "https://") + text
     parts = urlsplit(text)
     if parts.username or parts.password:
-        raise ValueError("Do not put the token in the URL. Give it with token=..., or let the form ask for it.")
+        raise ValueError(
+            "Do not put the token in the URL. Save it in Settings or $GRAPHIFY_KB_TOKEN, or let the form ask for it."
+        )
     if parts.scheme.lower() not in ("http", "https") or not parts.hostname:
         raise ValueError(f"{url} is not an http or https URL.")
     return urlunsplit((parts.scheme.lower(), parts.netloc.lower(), parts.path.rstrip("/"), "", ""))
@@ -372,7 +331,7 @@ class KBClient:
             except (ValueError, AttributeError):
                 message = (raw or b"").decode(errors="replace")[:500] or error.reason
             if error.code == 401:
-                message = f"{message}. Give the token with graphify.kb_use(url)"
+                message = f"{message}. Save the server and its token in Settings"
             elif error.code == 403 and "Host header" in str(message):
                 message = f"{message}. Start the server with --allow-host {urlsplit(self.url).hostname}"
             elif error.code == 429 and error.headers.get("Retry-After"):
@@ -381,7 +340,7 @@ class KBClient:
         except (urllib.error.URLError, OSError) as error:
             reason = getattr(error, "reason", error)
             hint = (
-                "Give source='local' for the store of this project, or start a server with graphify.kb_serve()."
+                "Give source='local' for the store of this project, or start a server with graphify.serve()."
                 if is_loopback_url(self.url)
                 else "Check the URL, and that the server runs and this machine can reach it."
             )
@@ -409,6 +368,11 @@ def node_path(node_id: str) -> str:
     return "/api/nodes/" + quote(node_id, safe="")
 
 
+def document_path(doc_id: str) -> str:
+    """The API path of one document."""
+    return "/api/documents/" + quote(doc_id, safe="")
+
+
 def server(
     answer: dict, stats: dict, url: str, started: bool, pid: int | None = None, log: str = "", source: str = ""
 ) -> KBServer:
@@ -428,9 +392,9 @@ def server(
     )
 
 
-def search_result(query: str, answer: dict, source: str = "") -> KBSearchResult:
-    """A KBSearchResult from a `/api/search` answer."""
-    hits = tuple(
+def search_hits(answer: dict) -> tuple[KBHit, ...]:
+    """The hits of a `/api/search` answer, best first."""
+    return tuple(
         KBHit(
             kind=str(hit.get("kind") or "node"),
             id=str(hit.get("id") or ""),
@@ -441,7 +405,6 @@ def search_result(query: str, answer: dict, source: str = "") -> KBSearchResult:
         )
         for hit in answer.get("results") or ()
     )
-    return KBSearchResult(query=query, hits=hits, source=source)
 
 
 def _edges(rows, direction: str) -> tuple[KBEdge, ...]:

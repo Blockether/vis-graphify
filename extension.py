@@ -7,10 +7,10 @@ from typing import Literal
 import blockether.vis.extension as vis
 
 from vis_graphify import presentation
-from vis_graphify.kb import KBSearchResult, normalize_url
+from vis_graphify.kb import normalize_url
 from vis_graphify.tools import GraphifyTools, HubsResult, ImpactResult, ReferencesResult, SearchResult
 
-VERSION = "0.14.0"
+VERSION = "0.15.0"
 
 _Tag = Literal["observation", "mutation"]
 
@@ -19,7 +19,6 @@ vis.sequence(field="nodes")(SearchResult)
 vis.sequence(field="references")(ReferencesResult)
 vis.sequence(field="impacts")(ImpactResult)
 vis.sequence(field="hubs")(HubsResult)
-vis.sequence(field="hits")(KBSearchResult)
 
 
 def _bind(name, label, build, arguments=(), *, tag: _Tag = "observation", show_start=False):
@@ -47,8 +46,8 @@ _bind(
     show_start=True,
 )
 _bind("status", "Check code graph", presentation.status, ("root",))
-_bind("search", "Search code graph", presentation.search, ("pattern", "root"))
-_bind("explain", "Explain code node", presentation.explain, ("node", "root"))
+_bind("search", "Search graph", presentation.search, ("pattern", "root", "source", "cls"))
+_bind("explain", "Explain node", presentation.explain, ("node", "root", "source"))
 _bind("shortest_path", "Find code path", presentation.shortest_path, ("source", "target", "root"))
 _bind("hubs", "List code hubs", presentation.hubs, ("root", "limit", "relation"))
 _bind("affected", "Find affected code", presentation.affected, ("node", "root", "depth", "within"))
@@ -88,47 +87,42 @@ _bind(
 _bind("domain", "Map domain flows", presentation.domain, ("root", "plugins"), tag="mutation", show_start=True)
 
 _bind(
-    "kb_serve",
-    "Start knowledge base",
-    presentation.kb_server,
-    ("source", "port", "host", "read_only"),
+    "serve",
+    "Serve knowledge base",
+    presentation.serve,
+    ("source", "port", "host", "read_only", "stop"),
     tag="mutation",
     show_start=True,
 )
-_bind("kb_stop", "Stop knowledge base", presentation.kb_stopped, ("source",), tag="mutation")
-_bind("kb_use", "Use knowledge base", presentation.kb_server, ("source",), show_start=True)
-_bind("kb_sources", "List knowledge sources", presentation.kb_sources)
 _bind(
-    "kb_snapshot",
+    "snapshot",
     "Snapshot knowledge base",
-    presentation.kb_snapshot,
+    presentation.snapshot,
     ("source", "name", "assets"),
     tag="mutation",
     show_start=True,
 )
-_bind("kb_search", "Search knowledge base", presentation.kb_search, ("query", "source", "limit", "cls"))
-_bind("kb_node", "Read knowledge node", presentation.kb_node, ("node", "source"))
-_bind("kb_write", "Write knowledge base", presentation.kb_change("Write knowledge base"), ("source",), tag="mutation")
+_bind("write", "Write knowledge base", presentation.change("Write knowledge base"), ("source",), tag="mutation")
 _bind(
-    "kb_ingest",
+    "ingest",
     "Ingest document",
-    presentation.kb_ingest,
+    presentation.ingest,
     ("path", "source", "mode", "title"),
     tag="mutation",
     show_start=True,
 )
-_bind("kb_validate", "Validate knowledge base", presentation.kb_validate, ("source", "limit"), show_start=True)
+_bind("validate", "Validate knowledge base", presentation.validate, ("source", "limit"), show_start=True)
 _bind(
-    "kb_undo",
+    "undo",
     "Undo knowledge change",
-    presentation.kb_change("Undo knowledge change"),
+    presentation.change("Undo knowledge change"),
     ("source", "seq"),
     tag="mutation",
 )
 _bind(
-    "kb_publish",
+    "publish",
     "Publish knowledge base",
-    presentation.kb_publish,
+    presentation.publish,
     ("source", "path"),
     tag="mutation",
     show_start=True,
@@ -147,14 +141,10 @@ affected lists the dependent functions in `r.functions` and the private ones in 
 rename, add_parameter, move and move_file write nothing on a conflict. After a write, they run the project check. When the result says `passed`, reply at once.
 Name a node by `pkg.Name`, `Class.method`, `ns/name`, `crate::mod::name` or bare name. When the task names the file, use `src/money/format.ts::name`.
 Also: graphify.explain(node) · shortest_path(a, b) · search(pattern) · hubs() · domain() (edd-core flows -> DOMAIN.md).
-Knowledge base (ontology, documents, undoable edits), shared with people. The code tools above always read the local graph.
-A knowledge source is "local" (the store in graphify-out/), a store or snapshot folder, or a server URL. Every kb_* call takes source=...; without it, the call uses the source of the session.
-  print(graphify.kb_use("https://kb.example.com"))  make a source the source of the session; a masked form asks the person for a server token, so never ask for it in chat
-  print(graphify.kb_sources())   list the sources · kb_snapshot(url) copies a server into a local read-only folder
-  graphify.kb_search(q) · kb_node(id) · kb_validate()   read nodes, documents and ontology findings
-  graphify.kb_write([{"op": "add_node", "label": "Billing", "class": "concept"}, {"op": "add_edge", ...}])  one undoable change; doc("graphify.kb_write") lists the ops
-  graphify.kb_ingest("docs/spec.pdf", mode="text"|"llm") · kb_undo() reverts the latest change of this session · kb_publish() (static HTML)
-  print(graphify.kb_serve())   start or reuse the server of a store; give the person its URL for the admin UI"""
+Knowledge (ontology, notes, documents) is part of the same graph: search and explain return it next to the code. The code itself always comes from the local graph.
+A knowledge source is "local" (the store in graphify-out/), a store or snapshot folder, or a server URL. A call without source=... uses the configured server, else the local store. A server asks the person for its token in a masked form; never ask for it in chat.
+  graphify.write([{"op": "add_node", "label": "Billing", "class": "concept"}, {"op": "add_edge", ...}])  one undoable change; doc("graphify.write") lists the ops · undo() reverts it
+  graphify.ingest("docs/spec.pdf", mode="text"|"llm") · validate() · snapshot(url) · publish() (static HTML) · print(graphify.serve()) gives the person the admin UI URL"""
 
 
 def _has_secret_settings() -> bool:
@@ -171,7 +161,7 @@ if _has_secret_settings():
     KB_URL = vis.Setting(
         id="graphify_kb_url",
         label="Knowledge base server",
-        description="The server for the kb_* calls that name no source, such as https://kb.example.com. Empty uses the local store.",
+        description="The knowledge server for graphify calls without a source, such as https://kb.example.com. Empty uses the local store.",
         type="string",
         default="",
     )
@@ -201,11 +191,11 @@ def _prompt(env) -> str:
         url = normalize_url(_kb_settings()[0].strip() or os.environ.get("GRAPHIFY_KB_URL", ""))
     except ValueError:
         return PROMPT
-    return f"{PROMPT}\n  The configured server is {url}. A kb_* call without source uses it, until kb_use chooses another source."
+    return f"{PROMPT}\nKnowledge comes from the configured server {url}; the code stays local."
 
 
 def _session_key() -> str:
-    """The id of the bound Vis session, or empty text outside a session. Each session keeps its own kb_* state."""
+    """The id of the bound Vis session, or empty text outside a session. Each session keeps its own tokens and changes."""
     try:
         return str(getattr(vis.session, "id", "") or "")
     except (AttributeError, ImportError, RuntimeError):
@@ -228,16 +218,6 @@ def _ask_kb_token(url: str, check) -> str | None:
         vis.forget(answer["token"])
 
 
-def _kb_secret(token: str) -> str:
-    """The token itself, or the plaintext behind a `vis-secret:` handle of a masked form."""
-    if not token.startswith("vis-secret:"):
-        return token
-    value = vis.reveal(token)
-    if not value:
-        raise ValueError("The vis-secret: handle is unknown or forgotten. Ask for the token again.")
-    return value
-
-
 vis.register_extension(
     vis.Extension(
         name="vis-graphify",
@@ -249,7 +229,6 @@ vis.register_extension(
                 GraphifyTools(
                     workspace_root=vis.workspace_root,
                     kb_ask_token=_ask_kb_token,
-                    kb_secret=_kb_secret,
                     kb_settings=_kb_settings,
                     kb_session=_session_key,
                 ),

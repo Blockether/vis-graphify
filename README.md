@@ -22,12 +22,13 @@ namespaces, vars, `:require` aliases, cross-file calls, protocols, records and C
 - You want to see how commands, queries and events flow between your services, or find calls to
   commands that no service registers: use `graphify.domain`. See [Domain flows](#domain-flows).
 - You want to keep concepts, notes and documents next to the code graph, check them against an
-  ontology and see them in the browser: use the `graphify.kb_*` calls. See
+  ontology and see them in the browser: use `graphify.write`, `graphify.ingest` and
+  `graphify.serve`. `graphify.search` and `graphify.explain` then show them next to the code. See
   [Knowledge base](#knowledge-base).
 - Your team runs a knowledge base server, and you want the agent to read and edit it while the code
-  tools keep the local graph: use `graphify.kb_use`. See
+  tools keep the local graph: give its URL as `source=`. See
   [Use a hosted knowledge base](#use-a-hosted-knowledge-base).
-- You want a local copy of that server, for example to read it offline: use `graphify.kb_snapshot`.
+- You want a local copy of that server, for example to read it offline: use `graphify.snapshot`.
   See [Copy a knowledge source](#copy-a-knowledge-source).
 - You want every session to use that server without a question for the token: save it in Vis
   Settings. See [Save the server in Settings](#save-the-server-in-settings).
@@ -51,8 +52,8 @@ The agent uses these tools in its Python sandbox:
 |---|---|
 | `graphify.build(root=".")` | Creates or updates `<root>/graphify-out/graph.json`. Other calls do this for you when the graph is missing or a source file changed. |
 | `graphify.status(root=".")` | Node, edge and file counts, and the build time. |
-| `graphify.search("gateway.*client")` | Nodes whose label, id or file matches the regex. |
-| `graphify.explain("my.ns/run")` | The node, what it calls and what calls or contains it. |
+| `graphify.search("gateway.*client")` | Code nodes whose label, id or file matches the regex, then the knowledge nodes and documents that match its words. |
+| `graphify.explain("my.ns/run")` | The node, what it calls and what calls or contains it, with the notes and documents about it. A knowledge node or a document works too. |
 | `graphify.shortest_path("a", "b")` | The shortest chain of edges between two nodes. |
 | `graphify.hubs(limit=20)` | The most called nodes. |
 | `graphify.affected("my.ns/run", within="src/api/")` | Every caller, importer and user, across all steps, with distance and file. `within` keeps only one folder or glob. `depth=2` stops after two steps. |
@@ -166,9 +167,9 @@ describes the contract. Make the plugin available in one of these ways:
 ## Knowledge base
 
 The knowledge base adds your concepts, documents and edges to the code graph, and checks them
-against an ontology. You and the agent edit the same store, and each change is undoable. The code
-tools, such as `search`, `affected`, `rename` and `move`, always read the local tree-sitter graph.
-Only the `kb_*` calls use a knowledge source.
+against an ontology. You and the agent edit the same store, and each change is undoable.
+`graphify.search` and `graphify.explain` show this knowledge next to the code. The code itself
+always comes from the local tree-sitter graph, also in `affected`, `rename` and `move`.
 
 A knowledge source is one of these:
 
@@ -178,34 +179,38 @@ A knowledge source is one of these:
 - A server URL, for example `https://kb.example.com`. See
   [Use a hosted knowledge base](#use-a-hosted-knowledge-base).
 
-Each `kb_*` call takes `source=`. Without it, the call uses the source of the session: the source of
-the latest `kb_use`, else the [configured server](#save-the-server-in-settings), else `local`.
+Each knowledge call takes `source=`. Without it, the call uses the
+[configured server](#save-the-server-in-settings), else `local`. Without a source, `search` and
+`explain` read `local` only when it holds knowledge. So a project without knowledge starts no
+server. When a knowledge source does not answer, they still give the code, and `note` tells why the
+knowledge is missing.
 
 ```python
-graphify.kb_write([
+graphify.write([
     {"op": "add_node", "label": "Billing", "class": "concept"},
     {"op": "add_edge", "source": "kb:billing", "target": "src_billing_invoice", "relation": "uses"},
     {"op": "add_document", "title": "Billing rules", "body": "[[Billing]] runs nightly."},
 ])
-print(graphify.kb_search("billing"))
-print(graphify.kb_ingest("docs/billing.pdf"))      # text mode: no model call
-print(graphify.kb_ingest("notes.md", mode="llm"))  # the model adds nodes and edges
-print(graphify.kb_validate())                      # ontology findings, errors first
-graphify.kb_undo()                                 # revert the latest change of this session
-print(graphify.kb_publish())                       # static graphify-out/kb.html
-print(graphify.kb_sources())                       # the sources and the source of the session
+print(graphify.search("billing"))               # code nodes, then knowledge nodes and documents
+print(graphify.explain("Billing"))              # a knowledge node: by id, document id or label
+print(graphify.ingest("docs/billing.pdf"))      # text mode: no model call
+print(graphify.ingest("notes.md", mode="llm"))  # the model adds nodes and edges
+print(graphify.validate())                      # ontology findings, errors first
+graphify.undo()                                 # revert the latest change of this session
+print(graphify.publish())                       # static graphify-out/kb.html
 ```
 
-- A batch in `kb_write` is one change: if one operation fails, the store applies none of them.
-- `kb_undo()` reverts the latest `kb_write` or `kb_ingest` of this session, also when other people
+- A batch in `write` is one change: if one operation fails, the store applies none of them.
+- `undo()` reverts the latest `write` or `ingest` of this session, also when other people
   changed the store after it. Give `seq=` to revert another change from the history.
+- `explain` of a document gives its title, tags and text, and the nodes that it links.
 - A store on this machine gets a server for these calls. The first call starts `graphify kb serve`
   for it on a free loopback port. The server keeps running after the session, and the next session
   uses it.
-- `graphify.kb_serve()` gives the URL of that server. Open the URL in a browser for the admin UI: a
+- `graphify.serve()` gives the URL of that server. Open the URL in a browser for the admin UI: a
   graph map, node inspector, ontology, consistency findings, documents and change history. Give
   `port=`, `host=` or `read_only=True` to choose them.
-- `graphify.kb_stop()` stops that server. It also works after a restart of the gateway.
+- `graphify.serve(stop=True)` stops that server. It also works after a restart of the gateway.
 
 The [knowledge base guide](https://github.com/Blockether/graphify/blob/v8/docs/kb.md) describes the
 HTTP API and the ontology.
@@ -217,9 +222,8 @@ then go to the new id. `rename`, `move` and `move_file` do this after each writt
 
 - `moved_nodes` lists each node with a new id, as `old id -> new id`.
 - The project store `graphify-out/kb/` gets the new ids through `graphify kb move`.
-- The source of the session gets them too when it is another store or a server. A server gets them
-  over HTTP, unless it serves the project store. A snapshot gets nothing: the next `kb_snapshot`
-  copies the moved records.
+- The [configured server](#save-the-server-in-settings) gets them too, over HTTP, unless it serves
+  the project store. A snapshot gets nothing: the next `snapshot` copies the moved records.
 - `kb` has one line for each knowledge base, for example
   `graphify-out/kb: 1 moved, 0 pending, 0 with no records at the old id`.
 
@@ -230,34 +234,35 @@ gives the error, and the code change stays written.
 
 ### Use a hosted knowledge base
 
-If your team runs `graphify kb serve` on a server, make it the source of the session once. The later
-`kb_*` calls then use that server and its token. The code tools keep the local graph.
+If your team runs `graphify kb serve` on a server, give its URL as `source=`. To use it in every call
+without a source, [save it in Settings](#save-the-server-in-settings). The code tools keep the local
+graph.
 
 ```python
-print(graphify.kb_use("https://kb.example.com"))
-print(graphify.kb_search("billing"))
-print(graphify.kb_search("billing", source="local"))  # the store of the project, for one call
-graphify.kb_use()                                     # back to the default source
+url = "https://kb.example.com"
+print(graphify.search("billing", source=url))
+graphify.write([{"op": "add_node", "label": "Billing", "class": "concept"}], source=url)
+print(graphify.search("billing", source="local"))  # the store of the project
 ```
 
 When the server needs a token, Vis shows a masked form in the TUI or the Companion. The form checks
 the token with the server before it closes. The token stays in memory. It does not go into the
-conversation, the logs or a result. A new session asks again. To connect without the form, see
-[Save the server in Settings](#save-the-server-in-settings).
+conversation, the logs or a result. Each session asks once for each server. If the server refuses
+the token later, for example after a token change, the next call asks again. To connect without the
+form, see [Save the server in Settings](#save-the-server-in-settings).
 
-- You can also give `token=`, but then the token shows in the conversation.
 - A URL without a scheme uses https, for example `kb.example.com`. A loopback address, such as
   `127.0.0.1:7878`, uses http.
-- If the server redirects to https on the same host, `kb_use` uses the new address. It never
+- If the server redirects to https on the same host, graphify uses the new address. It never
   follows a redirect to another host, so the token goes only to the server that you named.
-- Each session has its own source, its own tokens and its own undo history.
-- `kb_ingest` sends the file content, so you can add files from your machine. `kb_publish` first
+- Each session has its own tokens and its own undo history.
+- `ingest` sends the file content, so you can add files from your machine. `publish` first
   copies the store of the server, then writes `graphify-out/kb-<host>-<port>.html` on your machine.
 
 #### Save the server in Settings
 
-Save the server and its token once in Vis Settings. Then every session uses them without
-`kb_use` and without the form:
+Save the server and its token once in Vis Settings. Then every call without a source uses that
+server, and no form asks for the token:
 
 1. In Settings, open **Extensions** in the **Tools** section, then the **vis-graphify** group.
 2. In **Knowledge base server**, type the address, for example `https://kb.example.com`, and save.
@@ -276,15 +281,14 @@ variables.
 
 #### Connect without the form
 
-To connect without `kb_use`, without the form and without Settings, give the server and its
-token in two environment variables:
+To connect without the form and without Settings, give the server and its token in two
+environment variables:
 
-- `GRAPHIFY_KB_URL` is the server address. The `kb_*` calls without `source` use it, until `kb_use`
-  chooses another source. `kb_use()` without a source checks it. The agent sees this address, but
-  never the token. Without it, the default source is `local`.
+- `GRAPHIFY_KB_URL` is the server address. The knowledge calls without `source` use it. The agent
+  sees this address, but never the token. Without it, the default source is `local`.
 - `GRAPHIFY_KB_TOKEN` is the token. graphify sends it only to that server. Another server that a
   call names with `source` does not get it.
-- `kb_serve(host=...)` with an address other than loopback gives the token to the server that it
+- `serve(host=...)` with an address other than loopback gives the token to the server that it
   starts. That server then needs the token, and its admin UI asks for it in a sign-in form. A
   loopback server gets no token.
 
@@ -330,14 +334,13 @@ graphify kb serve graphify-out/graph.json --allow-host kb.example.com
 
 ### Copy a knowledge source
 
-`graphify.kb_snapshot(source)` copies a source into `graphify-out/snapshots/<name>/` of the project:
+`graphify.snapshot(source)` copies a source into `graphify-out/snapshots/<name>/` of the project:
 the graph, the ontology, the knowledge records and the documents. Read the copy without the server,
 for example offline or to compare it with the server later.
 
 ```python
-snap = graphify.kb_snapshot("https://kb.example.com")  # graphify-out/snapshots/kb.example.com
-print(graphify.kb_search("billing", source=snap.name))
-graphify.kb_use(snap.name)                              # the copy becomes the source of the session
+snap = graphify.snapshot("https://kb.example.com")  # graphify-out/snapshots/kb.example.com
+print(graphify.search("billing", source=snap.name))
 ```
 
 - A snapshot is read-only. Write to the source that it copies, then copy that source again.
