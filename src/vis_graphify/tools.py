@@ -602,13 +602,21 @@ def _kb_registry(graph: Path) -> dict | None:
     return data if isinstance(data, dict) and isinstance(data.get("url"), str) else None
 
 
+def _kb_store_saved(graph: Path) -> bool:
+    """True when the store of a graph has saved edits: `kb/store.sqlite`, or the `kb/overlay.json` of an import.
+
+    graphify moves `kb/overlay.json` into `kb/store.sqlite` when it next opens the store.
+    """
+    store = graph.parent / "kb"
+    return (store / "store.sqlite").is_file() or (store / "overlay.json").is_file()
+
+
 def _kb_has_knowledge(graph: Path) -> bool:
-    """True when the store of a graph holds knowledge: edits in `kb/overlay.json`, documents, or a running server.
+    """True when the store of a graph holds knowledge: saved edits, documents, or a running server.
 
     A server of this extension can hold a change that it did not save yet, so its store counts too.
     """
-    store = graph.parent / "kb"
-    saved = (store / "overlay.json").is_file() or (store / "documents").is_dir()
+    saved = _kb_store_saved(graph) or (graph.parent / "kb" / "documents").is_dir()
     return saved or (graph.parent / KB_REGISTRY).is_file()
 
 
@@ -1899,7 +1907,7 @@ class GraphifyTools:
         graph_file = g.graph_path(path).resolve()
         ops = [{"op": "move_node", "from": old, "to": new} for old, new in sorted(moved.items())]
         lines = []
-        if (graph_file.parent / "kb" / "overlay.json").is_file():
+        if _kb_store_saved(graph_file):
             lines.append(self._kb_move_store(path, graph_file, ops))
         try:
             target = self._kb_source(None)

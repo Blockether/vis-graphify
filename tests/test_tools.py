@@ -6,7 +6,15 @@ from pathlib import Path
 
 import pytest
 
-from vis_graphify.tools import BUNDLED_PLUGINS, GraphifyTools, Node, RenameEdit, RenameResult, graphify_command
+from vis_graphify.tools import (
+    BUNDLED_PLUGINS,
+    GraphifyTools,
+    Node,
+    RenameEdit,
+    RenameResult,
+    _kb_has_knowledge,
+    graphify_command,
+)
 
 
 def tools_for(root, runner=None):
@@ -236,10 +244,18 @@ def test_private_marks_unexported_definitions(tmp_path):
     assert not any(_private(tmp_path, node(*row)) for row in shown)
 
 
-def _store(root):
-    """Give the project a knowledge base store, as `graphify kb` leaves it."""
+def _store(root, name="store.sqlite"):
+    """Give the project a knowledge base store, as `graphify kb` leaves it (`overlay.json`: an import)."""
     (root / "graphify-out" / "kb").mkdir()
-    (root / "graphify-out" / "kb" / "overlay.json").write_text("{}")
+    (root / "graphify-out" / "kb" / name).write_text("{}")
+
+
+@pytest.mark.parametrize("name", ["store.sqlite", "overlay.json"])
+def test_a_saved_store_has_knowledge(project, name):
+    graph = project.resolve() / "graphify-out" / "graph.json"
+    assert not _kb_has_knowledge(graph)
+    _store(project.resolve(), name)
+    assert _kb_has_knowledge(graph)
 
 
 def test_moved_nodes_go_to_the_project_store(project, monkeypatch):
