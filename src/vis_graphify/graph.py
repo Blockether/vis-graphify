@@ -13,6 +13,8 @@ from pathlib import Path
 
 GRAPH_DIR = "graphify-out"
 GRAPH_FILE = "graph.json"
+KB_ORIGIN = "kb"
+"""The `_origin` of the nodes and edges that the knowledge base adds. The code questions skip them."""
 
 
 class GraphMissing(FileNotFoundError):
@@ -94,8 +96,14 @@ def stale(graph: Graph, root: str | Path) -> bool:
 
 
 def parse(path: Path, data: dict) -> Graph:
-    """Index the decoded content of a graph.json."""
-    nodes = {node["id"]: node for node in data.get("nodes", ()) if "id" in node}
+    """Index the decoded content of a graph.json.
+
+    It skips the nodes and edges that the knowledge base added, such as documents and notes, and the edges
+    of the skipped nodes. The code questions then see only the code.
+    """
+    rows = [node for node in data.get("nodes", ()) if "id" in node]
+    skipped = {str(node["id"]) for node in rows if node.get("_origin") == KB_ORIGIN}
+    nodes = {node["id"]: node for node in rows if str(node["id"]) not in skipped}
     links = [
         Link(
             source=str(item["source"]),
@@ -106,7 +114,11 @@ def parse(path: Path, data: dict) -> Graph:
             source_location=str(item.get("source_location") or ""),
         )
         for item in data.get("links", data.get("edges", ()))
-        if "source" in item and "target" in item
+        if "source" in item
+        and "target" in item
+        and item.get("_origin") != KB_ORIGIN
+        and str(item["source"]) not in skipped
+        and str(item["target"]) not in skipped
     ]
     return Graph(path=path, nodes=nodes, links=links)
 

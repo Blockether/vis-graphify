@@ -10,7 +10,7 @@ from vis_graphify import presentation
 from vis_graphify.kb import KBSearchResult, normalize_url
 from vis_graphify.tools import GraphifyTools, HubsResult, ImpactResult, ReferencesResult, SearchResult
 
-VERSION = "0.13.0"
+VERSION = "0.14.0"
 
 _Tag = Literal["observation", "mutation"]
 
@@ -91,28 +91,48 @@ _bind(
     "kb_serve",
     "Start knowledge base",
     presentation.kb_server,
-    ("root", "port", "host", "read_only"),
+    ("source", "port", "host", "read_only"),
     tag="mutation",
     show_start=True,
 )
-_bind("kb_stop", "Stop knowledge base", presentation.kb_stopped, ("url",), tag="mutation")
-_bind("kb_connect", "Connect knowledge base", presentation.kb_server, ("url",), show_start=True)
-_bind("kb_search", "Search knowledge base", presentation.kb_search, ("query", "url", "cls"))
-_bind("kb_node", "Read knowledge node", presentation.kb_node, ("node", "url"))
-_bind("kb_write", "Write knowledge base", presentation.kb_change("Write knowledge base"), ("url",), tag="mutation")
+_bind("kb_stop", "Stop knowledge base", presentation.kb_stopped, ("source",), tag="mutation")
+_bind("kb_use", "Use knowledge base", presentation.kb_server, ("source",), show_start=True)
+_bind("kb_sources", "List knowledge sources", presentation.kb_sources)
+_bind(
+    "kb_snapshot",
+    "Snapshot knowledge base",
+    presentation.kb_snapshot,
+    ("source", "name", "assets"),
+    tag="mutation",
+    show_start=True,
+)
+_bind("kb_search", "Search knowledge base", presentation.kb_search, ("query", "source", "limit", "cls"))
+_bind("kb_node", "Read knowledge node", presentation.kb_node, ("node", "source"))
+_bind("kb_write", "Write knowledge base", presentation.kb_change("Write knowledge base"), ("source",), tag="mutation")
 _bind(
     "kb_ingest",
     "Ingest document",
     presentation.kb_ingest,
-    ("source", "mode", "title", "url"),
+    ("path", "source", "mode", "title"),
     tag="mutation",
     show_start=True,
 )
-_bind("kb_validate", "Validate knowledge base", presentation.kb_validate, ("url", "limit"), show_start=True)
+_bind("kb_validate", "Validate knowledge base", presentation.kb_validate, ("source", "limit"), show_start=True)
 _bind(
-    "kb_undo", "Undo knowledge change", presentation.kb_change("Undo knowledge change"), ("url", "seq"), tag="mutation"
+    "kb_undo",
+    "Undo knowledge change",
+    presentation.kb_change("Undo knowledge change"),
+    ("source", "seq"),
+    tag="mutation",
 )
-_bind("kb_publish", "Publish knowledge base", presentation.kb_publish, ("url", "path"), tag="mutation")
+_bind(
+    "kb_publish",
+    "Publish knowledge base",
+    presentation.kb_publish,
+    ("source", "path"),
+    tag="mutation",
+    show_start=True,
+)
 
 PROMPT = """graphify: an exact code graph of the workspace (tree-sitter) for Python, JS, TS, Go, Rust, Java, Clojure and more. It builds and updates itself.
 Make one graphify call the first step, before any ls, cat, grep or shell:
@@ -127,12 +147,14 @@ affected lists the dependent functions in `r.functions` and the private ones in 
 rename, add_parameter, move and move_file write nothing on a conflict. After a write, they run the project check. When the result says `passed`, reply at once.
 Name a node by `pkg.Name`, `Class.method`, `ns/name`, `crate::mod::name` or bare name. When the task names the file, use `src/money/format.ts::name`.
 Also: graphify.explain(node) · shortest_path(a, b) · search(pattern) · hubs() · domain() (edd-core flows -> DOMAIN.md).
-Knowledge base (ontology, documents, undoable edits, admin UI in the browser), shared with people over HTTP:
-  print(graphify.kb_serve())    start or reuse `graphify kb serve` for the project graph; give the user its URL
-  print(graphify.kb_connect("https://kb.example.com"))  use a hosted server; a masked form asks the person for its token, so never ask for it in chat
+Knowledge base (ontology, documents, undoable edits), shared with people. The code tools above always read the local graph.
+A knowledge source is "local" (the store in graphify-out/), a store or snapshot folder, or a server URL. Every kb_* call takes source=...; without it, the call uses the source of the session.
+  print(graphify.kb_use("https://kb.example.com"))  make a source the source of the session; a masked form asks the person for a server token, so never ask for it in chat
+  print(graphify.kb_sources())   list the sources · kb_snapshot(url) copies a server into a local read-only folder
   graphify.kb_search(q) · kb_node(id) · kb_validate()   read nodes, documents and ontology findings
   graphify.kb_write([{"op": "add_node", "label": "Billing", "class": "concept"}, {"op": "add_edge", ...}])  one undoable change; doc("graphify.kb_write") lists the ops
-  graphify.kb_ingest("docs/spec.pdf", mode="text"|"llm") · kb_undo() · kb_publish() (static kb.html)"""
+  graphify.kb_ingest("docs/spec.pdf", mode="text"|"llm") · kb_undo() reverts the latest change of this session · kb_publish() (static HTML)
+  print(graphify.kb_serve())   start or reuse the server of a store; give the person its URL for the admin UI"""
 
 
 def _has_secret_settings() -> bool:
@@ -149,7 +171,7 @@ if _has_secret_settings():
     KB_URL = vis.Setting(
         id="graphify_kb_url",
         label="Knowledge base server",
-        description="The hosted server for the kb_* calls, such as https://kb.example.com.",
+        description="The server for the kb_* calls that name no source, such as https://kb.example.com. Empty uses the local store.",
         type="string",
         default="",
     )
@@ -179,7 +201,15 @@ def _prompt(env) -> str:
         url = normalize_url(_kb_settings()[0].strip() or os.environ.get("GRAPHIFY_KB_URL", ""))
     except ValueError:
         return PROMPT
-    return f"{PROMPT}\n  The configured server is {url}: the kb_* calls use it without kb_connect, until kb_serve or kb_connect names another server."
+    return f"{PROMPT}\n  The configured server is {url}. A kb_* call without source uses it, until kb_use chooses another source."
+
+
+def _session_key() -> str:
+    """The id of the bound Vis session, or empty text outside a session. Each session keeps its own kb_* state."""
+    try:
+        return str(getattr(vis.session, "id", "") or "")
+    except (AttributeError, ImportError, RuntimeError):
+        return ""
 
 
 def _ask_kb_token(url: str, check) -> str | None:
@@ -221,6 +251,7 @@ vis.register_extension(
                     kb_ask_token=_ask_kb_token,
                     kb_secret=_kb_secret,
                     kb_settings=_kb_settings,
+                    kb_session=_session_key,
                 ),
                 name="graphify",
             )

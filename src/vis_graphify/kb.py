@@ -7,6 +7,7 @@ results. It does not import graphify.
 
 from __future__ import annotations
 
+import gzip
 import ipaddress
 import json
 import urllib.error
@@ -15,14 +16,14 @@ from dataclasses import dataclass, field
 from typing import Annotated, Any
 from urllib.parse import quote, urlencode, urljoin, urlsplit, urlunsplit
 
-DEFAULT_URL = "http://127.0.0.1:7878"
-"""The address of `graphify kb serve` with its default port."""
-
 WRITE_HEADER = "X-Graphify-KB"
 """The server accepts a write without a token only when the request has this header."""
 
 ACTOR_HEADER = "X-Graphify-Actor"
 """The server records this value as the author of a change."""
+
+CHANGE_HEADER = "X-Graphify-KB-Change"
+"""The server names the history numbers of the change of a write in this header, such as `12` or `12,13`."""
 
 
 class KBRequestError(RuntimeError):
@@ -49,11 +50,13 @@ class KBServer:
     stopped: Annotated[bool, "True when kb_stop stopped the server. The counts are from just before the stop."] = False
     pid: Annotated[int | None, "Process id of a server that this extension started, else None."] = None
     log_path: Annotated[str, "Log file of a server that this extension started, else empty."] = ""
+    source: Annotated[str, "Knowledge source of the result: `local`, a store path or a server URL."] = ""
 
     def __str__(self) -> str:
+        where = f"{self.source} at {self.url}" if self.source and self.source != self.url else self.url
         if self.stopped:
             return (
-                f"Stopped knowledge base {self.url}. It saved {self.nodes} nodes, {self.edges} edges "
+                f"Stopped knowledge base {where}. It saved {self.nodes} nodes, {self.edges} edges "
                 f"and {self.documents} documents first."
             )
         how = "Started" if self.started else "Using"
@@ -64,7 +67,7 @@ class KBServer:
             else ""
         )
         return (
-            f"{how} knowledge base {self.url}{mode}: {self.nodes} nodes, {self.edges} edges, "
+            f"{how} knowledge base {where}{mode}: {self.nodes} nodes, {self.edges} edges, "
             f"{self.documents} documents. Open the URL for the admin UI.{plain}"
         )
 
@@ -91,11 +94,13 @@ class KBSearchResult:
 
     query: Annotated[str, "The query text."]
     hits: Annotated[tuple[KBHit, ...], "Best matches first."]
+    source: Annotated[str, "Knowledge source of the result: `local`, a store path or a server URL."] = ""
 
     def __str__(self) -> str:
+        where = self.source or "the knowledge base"
         if not self.hits:
-            return f"Nothing in the knowledge base matches {self.query!r}."
-        lines = [f"{len(self.hits)} matches for {self.query!r}:"]
+            return f"Nothing in {where} matches {self.query!r}."
+        lines = [f"{len(self.hits)} {'match' if len(self.hits) == 1 else 'matches'} for {self.query!r} in {where}:"]
         lines += [str(hit) for hit in self.hits]
         return "\n".join(lines)
 
@@ -129,6 +134,7 @@ class KBNode:
     edges: Annotated[tuple[KBEdge, ...], "Outgoing edges first, then incoming edges."]
     out_total: Annotated[int, "Count of all outgoing edges."]
     in_total: Annotated[int, "Count of all incoming edges."]
+    source: Annotated[str, "Knowledge source of the result: `local`, a store path or a server URL."] = ""
 
     def __str__(self) -> str:
         lines = [f"{self.label} ({self.cls}) [{self.id}], {self.out_total} out, {self.in_total} in:"]
@@ -146,11 +152,14 @@ class KBChange:
     version: Annotated[int, "Change counter of the server after the change."]
     results: Annotated[tuple[dict[str, Any], ...], "One stored record for each operation, in order."] = ()
     undone: Annotated[int | None, "History number of the change that an undo reverted, else None."] = None
+    source: Annotated[str, "Knowledge source of the result: `local`, a store path or a server URL."] = ""
+    seqs: Annotated[tuple[int, ...], "History numbers of the steps of a write, oldest first. Empty for an undo."] = ()
 
     def __str__(self) -> str:
         if self.undone is not None:
             return f"Undid change {self.undone}: {self.summary} (version {self.version})."
-        return f"{self.summary} (version {self.version}). graphify.kb_undo() reverts it."
+        undo = f"graphify.kb_undo(source={self.source!r})" if self.source else "graphify.kb_undo()"
+        return f"{self.summary} (version {self.version}). {undo} reverts it."
 
 
 @dataclass(frozen=True)
@@ -164,6 +173,7 @@ class KBIngestResult:
     nodes_added: Annotated[tuple[str, ...], "Ids of the nodes that the extraction added."]
     edges_added: Annotated[int, "Count of the edges that the extraction added."]
     notes: Annotated[tuple[str, ...], "Warnings of the ingest, such as a missing model."]
+    source: Annotated[str, "Knowledge source of the result: `local`, a store path or a server URL."] = ""
 
     def __str__(self) -> str:
         text = (
@@ -198,6 +208,7 @@ class KBReport:
     by_code: Annotated[dict[str, int], "Count of findings for each code."]
     findings: Annotated[tuple[KBFinding, ...], "The first findings, errors first."]
     truncated: Annotated[bool, "True when the server returned only some findings."] = False
+    source: Annotated[str, "Knowledge source of the result: `local`, a store path or a server URL."] = ""
 
     def __str__(self) -> str:
         head = f"{self.errors} errors, {self.warnings} warnings, {self.notes} notes."
@@ -215,9 +226,63 @@ class KBPublishResult:
 
     path: Annotated[str, "Absolute path of the HTML file."]
     bytes: Annotated[int, "File size."]
+    source: Annotated[str, "Knowledge source of the result: `local`, a store path or a server URL."] = ""
 
     def __str__(self) -> str:
         return f"Published {self.path} ({self.bytes} bytes). It opens without a server."
+
+
+@dataclass(frozen=True)
+class KBSourceInfo:
+    """One knowledge source that the kb_* tools can use."""
+
+    source: Annotated[str, "Give this value as `source`: `local`, a store or snapshot path, or a server URL."]
+    kind: Annotated[str, "`local`, `store`, `snapshot` or `server`."]
+    url: Annotated[str, "URL of the server, or empty when no server runs for the store."]
+    path: Annotated[str, "Absolute path of the graph.json of a store or a snapshot, else empty."]
+    current: Annotated[bool, "True for the source of this session."]
+    note: Annotated[str, "Where the source comes from."]
+
+    def __str__(self) -> str:
+        mark = "*" if self.current else "-"
+        served = f" at {self.url}" if self.url and self.url != self.source else ""
+        return f"{mark} {self.source} ({self.kind}{served}): {self.note}"
+
+
+@dataclass(frozen=True)
+class KBSources:
+    """The knowledge sources of the workspace and of this session."""
+
+    sources: Annotated[tuple[KBSourceInfo, ...], "The local store first, then snapshots, then servers."]
+    current: Annotated[str, "The source of this session. The kb_* tools use it when a call gives no source."]
+
+    def __str__(self) -> str:
+        lines = [f"{len(self.sources)} knowledge sources. * marks the source of this session:"]
+        lines += [str(row) for row in self.sources]
+        lines.append("Give one as source=..., or make it the source of the session with graphify.kb_use(source).")
+        return "\n".join(lines)
+
+
+@dataclass(frozen=True)
+class KBSnapshot:
+    """A local, read-only copy of a knowledge source."""
+
+    source: Annotated[str, "The source that the snapshot copies."]
+    name: Annotated[str, "Folder of the snapshot, relative to the workspace root. Give it as `source` to read it."]
+    path: Annotated[str, "Absolute path of the snapshot folder."]
+    version: Annotated[int, "Change counter of the source at the copy."]
+    nodes: Annotated[int, "Node count of the copy."]
+    edges: Annotated[int, "Edge count of the copy."]
+    documents: Annotated[int, "Count of documents in the copy."]
+    assets: Annotated[int, "Count of document files in the copy, such as images and PDFs."]
+    taken_at: Annotated[str, "UTC time of the copy, in ISO 8601."]
+
+    def __str__(self) -> str:
+        files = f", {self.assets} document files" if self.assets else ""
+        return (
+            f"Copied {self.source} (version {self.version}) to {self.name}: {self.nodes} nodes, {self.edges} edges, "
+            f"{self.documents} documents{files}. Read it with source={self.name!r}. The copy is read-only."
+        )
 
 
 def normalize_url(url: str) -> str:
@@ -264,18 +329,21 @@ _OPENER = urllib.request.build_opener(_NoRedirect)
 class KBClient:
     """HTTP access to one knowledge base server."""
 
-    url: str = DEFAULT_URL
+    url: str
     token: str | None = field(default=None, repr=False)
     actor: str = "agent"
     timeout_s: float = 60.0
     _opener: Any = field(default=None, repr=False)
+    changes: tuple[int, ...] = field(default=(), init=False)
+    """History numbers that the latest successful write committed, from the CHANGE_HEADER of its answer."""
 
     def request(self, method: str, path: str, body: dict | None = None, query: dict | None = None) -> dict:
         """Send one request. Returns the JSON answer. Raises KBRequestError with the server message."""
+        self.changes = ()
         target = self.url.rstrip("/") + path
         if query:
             target += "?" + urlencode({k: v for k, v in query.items() if v is not None})
-        headers = {"Accept": "application/json", ACTOR_HEADER: self.actor}
+        headers = {"Accept": "application/json", "Accept-Encoding": "gzip", ACTOR_HEADER: self.actor}
         if method != "GET":
             headers[WRITE_HEADER] = "1"
         if self.token:
@@ -288,9 +356,10 @@ class KBClient:
         opener = self._opener or _OPENER.open
         try:
             with opener(request, timeout=self.timeout_s) as response:
-                raw = response.read()
+                raw = _unpack(response.read(), response.headers)
+                changes = response.headers.get(CHANGE_HEADER) or ""
         except urllib.error.HTTPError as error:
-            raw = error.read()
+            raw = _unpack(error.read(), error.headers)
             if 300 <= error.code < 400:
                 location = urljoin(target, error.headers.get("Location") or "")
                 raise KBRequestError(
@@ -303,7 +372,7 @@ class KBClient:
             except (ValueError, AttributeError):
                 message = (raw or b"").decode(errors="replace")[:500] or error.reason
             if error.code == 401:
-                message = f"{message}. Give the token with graphify.kb_connect(url)"
+                message = f"{message}. Give the token with graphify.kb_use(url)"
             elif error.code == 403 and "Host header" in str(message):
                 message = f"{message}. Start the server with --allow-host {urlsplit(self.url).hostname}"
             elif error.code == 429 and error.headers.get("Retry-After"):
@@ -312,7 +381,7 @@ class KBClient:
         except (urllib.error.URLError, OSError) as error:
             reason = getattr(error, "reason", error)
             hint = (
-                "Start one with graphify.kb_serve()."
+                "Give source='local' for the store of this project, or start a server with graphify.kb_serve()."
                 if is_loopback_url(self.url)
                 else "Check the URL, and that the server runs and this machine can reach it."
             )
@@ -321,7 +390,18 @@ class KBClient:
             answer = json.loads(raw or b"{}")
         except ValueError:
             raise KBRequestError(f"{method} {path}: the answer is not JSON.") from None
+        self.changes = tuple(int(part) for part in changes.split(",") if part.strip().isdigit())
         return answer if isinstance(answer, dict) else {"value": answer}
+
+
+def _unpack(raw: bytes, headers: Any) -> bytes:
+    """The body of an answer, unpacked when the server sent it with gzip."""
+    if raw and "gzip" in str((headers.get("Content-Encoding") if headers else "") or "").lower():
+        try:
+            return gzip.decompress(raw)
+        except (OSError, EOFError):
+            raise KBRequestError("The server sent a broken gzip answer.") from None
+    return raw
 
 
 def node_path(node_id: str) -> str:
@@ -329,7 +409,9 @@ def node_path(node_id: str) -> str:
     return "/api/nodes/" + quote(node_id, safe="")
 
 
-def server(answer: dict, stats: dict, url: str, started: bool, pid: int | None = None, log: str = "") -> KBServer:
+def server(
+    answer: dict, stats: dict, url: str, started: bool, pid: int | None = None, log: str = "", source: str = ""
+) -> KBServer:
     """A KBServer from `/api/health` and `/api/stats` answers."""
     return KBServer(
         url=url,
@@ -342,10 +424,11 @@ def server(answer: dict, stats: dict, url: str, started: bool, pid: int | None =
         started=started,
         pid=pid,
         log_path=log,
+        source=source,
     )
 
 
-def search_result(query: str, answer: dict) -> KBSearchResult:
+def search_result(query: str, answer: dict, source: str = "") -> KBSearchResult:
     """A KBSearchResult from a `/api/search` answer."""
     hits = tuple(
         KBHit(
@@ -358,7 +441,7 @@ def search_result(query: str, answer: dict) -> KBSearchResult:
         )
         for hit in answer.get("results") or ()
     )
-    return KBSearchResult(query=query, hits=hits)
+    return KBSearchResult(query=query, hits=hits, source=source)
 
 
 def _edges(rows, direction: str) -> tuple[KBEdge, ...]:
@@ -376,7 +459,7 @@ def _edges(rows, direction: str) -> tuple[KBEdge, ...]:
     )
 
 
-def node_result(answer: dict) -> KBNode:
+def node_result(answer: dict, source: str = "") -> KBNode:
     """A KBNode from a `/api/nodes/<id>` answer."""
     data = dict(answer.get("node") or {})
     return KBNode(
@@ -388,20 +471,23 @@ def node_result(answer: dict) -> KBNode:
         edges=_edges(answer.get("out"), "out") + _edges(answer.get("in"), "in"),
         out_total=int(answer.get("out_total") or 0),
         in_total=int(answer.get("in_total") or 0),
+        source=source,
     )
 
 
-def change_result(summary: str, answer: dict) -> KBChange:
+def change_result(summary: str, answer: dict, source: str = "", seqs: tuple[int, ...] = ()) -> KBChange:
     """A KBChange from a `/api/batch` or `/api/undo` answer."""
     return KBChange(
         summary=str(answer.get("summary") or summary),
         version=int(answer.get("version") or 0),
         results=tuple(r if isinstance(r, dict) else {"value": r} for r in answer.get("results") or ()),
         undone=answer.get("undone") if isinstance(answer.get("undone"), int) else None,
+        source=source,
+        seqs=tuple(seqs),
     )
 
 
-def ingest_result(answer: dict) -> KBIngestResult:
+def ingest_result(answer: dict, source: str = "") -> KBIngestResult:
     """A KBIngestResult from a `/api/ingest` answer."""
     document = answer.get("document") or {}
     return KBIngestResult(
@@ -412,10 +498,11 @@ def ingest_result(answer: dict) -> KBIngestResult:
         nodes_added=tuple(str(n.get("id") if isinstance(n, dict) else n) for n in answer.get("nodes_added") or ()),
         edges_added=int(answer.get("edges_added") or 0),
         notes=tuple(str(note) for note in answer.get("notes") or ()),
+        source=source,
     )
 
 
-def report_result(answer: dict) -> KBReport:
+def report_result(answer: dict, source: str = "") -> KBReport:
     """A KBReport from a `/api/validate` answer."""
     counts = answer.get("counts") or {}
     findings = tuple(
@@ -437,4 +524,5 @@ def report_result(answer: dict) -> KBReport:
         by_code=dict(answer.get("by_code") or {}),
         findings=findings,
         truncated=bool(answer.get("truncated")),
+        source=source,
     )

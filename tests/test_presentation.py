@@ -79,6 +79,26 @@ def test_renderer_failure_and_start_show_arguments():
     assert render(phase="success", result=None) is None
 
 
+def test_kb_source_states():
+    from vis_graphify.kb import KBSnapshot, KBSourceInfo, KBSources
+
+    note = "the store of the workspace root"
+    local = KBSourceInfo("local", "local", "http://127.0.0.1:5000", "/p/graphify-out/graph.json", True, note)
+    listed = presentation.kb_sources(KBSources((local,), "local"))
+    assert summary(listed) == "1 source, current local"
+    assert listed.content[0].rows == (("*", "local", "local", "http://127.0.0.1:5000", note),)
+    assert presentation.kb_sources(KBSources((), "local")).content == ()
+    place = "graphify-out/snapshots/kb.example.com"
+    snap = KBSnapshot("https://kb.example.com", place, f"/p/{place}", 7, 9, 3, 1, 2, "2025-01-01T00:00:00Z")
+    assert summary(presentation.kb_snapshot(snap)) == (
+        f"https://kb.example.com to {place}: 9 nodes, 3 edges, 1 document, 2 document files"
+    )
+    render = presentation.renderer("Snapshot knowledge base", presentation.kb_snapshot, ("source", "name", "assets"))
+    failed = render(phase="failure", args=(object(), place), kwargs={}, error=ValueError("is a snapshot"))
+    texts = [getattr(block, "text", "") for block in failed.content]
+    assert failed.summary == "failed" and f"source={place!r}" in texts and "is a snapshot" in texts
+
+
 def _entry(monkeypatch):
     """Load extension.py with a stub registration. The test end restores the unwrapped GraphifyTools methods."""
     for name, value in list(vars(GraphifyTools).items()):
@@ -99,8 +119,8 @@ def test_prompt_names_the_configured_knowledge_base_server(monkeypatch):
     assert extension.prompt({}) == module.PROMPT
     monkeypatch.setenv("GRAPHIFY_KB_URL", "KB.example.com/")
     assert extension.prompt({}).endswith(
-        "The configured server is https://kb.example.com: the kb_* calls use it without kb_connect,"
-        " until kb_serve or kb_connect names another server."
+        "The configured server is https://kb.example.com. A kb_* call without source uses it,"
+        " until kb_use chooses another source."
     )
     # An invalid address adds nothing: the kb_* calls report it.
     monkeypatch.setenv("GRAPHIFY_KB_URL", "ftp://kb.example.com")
@@ -128,7 +148,7 @@ def test_settings_name_the_server_and_keep_the_token_secret(monkeypatch):
     # The server in Settings wins over the environment.
     monkeypatch.setenv("GRAPHIFY_KB_URL", "other.example.com")
     saved.update(graphify_kb_url=" KB.example.com/ ", graphify_kb_token="t" * 20)
-    assert "The configured server is https://kb.example.com:" in extension.prompt({})
+    assert "The configured server is https://kb.example.com." in extension.prompt({})
     assert module._kb_settings() == (" KB.example.com/ ", "t" * 20)
 
 
@@ -144,7 +164,7 @@ def test_hosts_without_string_settings_keep_the_environment(monkeypatch):
     (extension,) = registered
     assert module.SETTINGS == [] and module._kb_settings() == ("", "")
     monkeypatch.setenv("GRAPHIFY_KB_URL", "kb.example.com")
-    assert "The configured server is https://kb.example.com:" in extension.prompt({})
+    assert "The configured server is https://kb.example.com." in extension.prompt({})
 
 
 def test_a_declaration_error_on_a_host_with_text_settings_fails_the_load(monkeypatch):
@@ -179,7 +199,9 @@ def test_extension_registers_every_tool_with_an_activity(monkeypatch):
             "domain",
             "kb_serve",
             "kb_stop",
-            "kb_connect",
+            "kb_use",
+            "kb_sources",
+            "kb_snapshot",
             "kb_search",
             "kb_node",
             "kb_write",

@@ -6,7 +6,17 @@ from typing import Callable
 
 import blockether.vis.extension as vis
 
-from vis_graphify.kb import KBChange, KBIngestResult, KBNode, KBPublishResult, KBReport, KBSearchResult, KBServer
+from vis_graphify.kb import (
+    KBChange,
+    KBIngestResult,
+    KBNode,
+    KBPublishResult,
+    KBReport,
+    KBSearchResult,
+    KBServer,
+    KBSnapshot,
+    KBSources,
+)
 from vis_graphify.tools import (
     BuildResult,
     DomainReport,
@@ -308,10 +318,17 @@ def domain(result: DomainReport) -> vis.ActivityPresentation:
     return vis.ActivityPresentation("Map domain flows", summary, tuple(content))
 
 
+def _kb_where(source: str, url: str) -> str:
+    return f"{source} at {url}" if source and source != url else url or source
+
+
 def kb_server(result: KBServer) -> vis.ActivityPresentation:
     label = "Start knowledge base" if result.started else "Use knowledge base"
     mode = ", read-only" if result.read_only else ""
-    summary = f"{result.url}{mode}: {result.nodes} nodes, {result.edges} edges, {_plural(result.documents, 'document')}"
+    summary = (
+        f"{_kb_where(result.source, result.url)}{mode}: {result.nodes} nodes, {result.edges} edges, "
+        f"{_plural(result.documents, 'document')}"
+    )
     content = [vis.ActivityText(result.graph_path)] if result.graph_path else []
     if result.log_path:
         content.append(vis.ActivityText(f"Log: {result.log_path}"))
@@ -319,7 +336,25 @@ def kb_server(result: KBServer) -> vis.ActivityPresentation:
 
 
 def kb_stopped(result: KBServer) -> vis.ActivityPresentation:
-    return vis.ActivityPresentation("Stop knowledge base", f"stopped {result.url}", ())
+    return vis.ActivityPresentation("Stop knowledge base", f"stopped {_kb_where(result.source, result.url)}", ())
+
+
+def kb_sources(result: KBSources) -> vis.ActivityPresentation:
+    rows = tuple(("*" if row.current else "", row.source, row.kind, row.url, row.note) for row in result.sources[:50])
+    return vis.ActivityPresentation(
+        "List knowledge sources",
+        f"{_plural(len(result.sources), 'source')}, current {result.current}",
+        (vis.ActivityTable(("Current", "Source", "Kind", "Server", "Note"), rows),) if rows else (),
+    )
+
+
+def kb_snapshot(result: KBSnapshot) -> vis.ActivityPresentation:
+    files = f", {_plural(result.assets, 'document file')}" if result.assets else ""
+    summary = (
+        f"{result.source} to {result.name}: {result.nodes} nodes, {result.edges} edges, "
+        f"{_plural(result.documents, 'document')}{files}"
+    )
+    return vis.ActivityPresentation("Snapshot knowledge base", summary, (vis.ActivityText(result.path),))
 
 
 def kb_search(result: KBSearchResult) -> vis.ActivityPresentation:
@@ -330,7 +365,8 @@ def kb_search(result: KBSearchResult) -> vis.ActivityPresentation:
     rows = tuple((hit.label, hit.kind, hit.cls, hit.source_file) for hit in result.hits)
     return vis.ActivityPresentation(
         "Search knowledge base",
-        f"{len(result.hits)} {'match' if len(result.hits) == 1 else 'matches'} for {result.query!r}",
+        f"{len(result.hits)} {'match' if len(result.hits) == 1 else 'matches'} for {result.query!r}"
+        + (f" in {result.source}" if result.source else ""),
         (
             vis.ActivityTable(
                 ("Label", "Kind", "Class", "Source"), rows, paths=tuple(h.source_file for h in result.hits)
@@ -360,7 +396,8 @@ def kb_change(label: str):
             for r in result.results[:50]
         )
         content = (vis.ActivityTable(("Id", "Label"), rows),) if rows else ()
-        return vis.ActivityPresentation(label, f"{result.summary}, version {result.version}", content)
+        where = f" in {result.source}" if result.source else ""
+        return vis.ActivityPresentation(label, f"{result.summary}{where}, version {result.version}", content)
 
     return build
 
@@ -401,7 +438,7 @@ def _arguments(names: tuple[str, ...]) -> Callable[[tuple, dict], tuple]:
             args = args[1:]
         values = dict(zip(names, args))
         values.update({key: value for key, value in kwargs.items() if key in names})
-        shown = ", ".join(f"{key}={values[key]!r}" for key in names if key in values)
+        shown = ", ".join(f"{key}={_clip(repr(values[key]), 200)}" for key in names if key in values)
         return (vis.ActivityText(shown),) if shown else ()
 
     return describe
