@@ -90,7 +90,7 @@ _bind(
     "serve",
     "Serve knowledge base",
     presentation.serve,
-    ("source", "port", "host", "read_only", "stop"),
+    ("source", "port", "host", "read_only", "stop", "timeout_s", "store"),
     tag="mutation",
     show_start=True,
 )
@@ -144,7 +144,8 @@ Also: graphify.explain(node) · shortest_path(a, b) · search(pattern) · hubs()
 Knowledge (ontology, notes, documents) is part of the same graph: search and explain return it next to the code. The code itself always comes from the local graph.
 A knowledge source is "local" (the store in graphify-out/), a store or snapshot folder, or a server URL. A call without source=... uses the configured server, else the local store. A server asks the person for its token in a masked form; never ask for it in chat.
   graphify.write([{"op": "add_node", "label": "Billing", "class": "concept"}, {"op": "add_edge", ...}])  one undoable change; doc("graphify.write") lists the ops · undo() reverts it
-  graphify.ingest("docs/spec.pdf", mode="text"|"llm") · validate() · snapshot(url) · publish() (static HTML) · print(graphify.serve()) gives the person the admin UI URL"""
+  graphify.ingest("docs/spec.pdf", mode="text"|"llm") · validate() · snapshot(url) · publish() (static HTML) · print(graphify.serve()) gives the person the admin UI URL
+Own store backend in Python: put a KBStore subclass, or a function that returns one, in a project file. Then call graphify.serve(store="module:attr") before the first knowledge call of a new store; doc("graphify.serve") tells more."""
 
 
 def _has_secret_settings() -> bool:

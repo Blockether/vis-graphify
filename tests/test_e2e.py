@@ -432,23 +432,38 @@ class ProbeStore(SQLiteStore):
 """
 
 
+def _stop_servers(tools):
+    for process in tools._kb_procs.values():
+        if process.poll() is None:
+            process.terminate()
+            process.wait(10)
+
+
 def test_real_server_loads_a_store_backend_of_the_project(tmp_path, monkeypatch):
     for name in ("GRAPHIFY_KB_URL", "GRAPHIFY_KB_STORE"):
         monkeypatch.delenv(name, raising=False)
     _write(tmp_path, {"app.py": "def query():\n    return 1\n", "probe_store.py": PROBE_STORE})
-    tools = GraphifyTools(workspace_root=lambda: str(tmp_path), kb_store=lambda: "probe_store:ProbeStore")
+    probe = tmp_path / "probe-opened"
+    tools = GraphifyTools(workspace_root=lambda: str(tmp_path))
     try:
+        assert tools.serve(store="probe_store:ProbeStore").started
         tools.write([{"op": "add_node", "label": "Billing", "class": "concept"}])
         # The server of the store ran the backend code of the project.
-        assert int((tmp_path / "probe-opened").read_text()) != os.getpid()
+        server_pid = int(probe.read_text())
+        assert server_pid != os.getpid()
+        # The page export of the same store runs in another child, and that child gets the backend too.
+        assert os.path.isfile(tools.publish().path) and int(probe.read_text()) != server_pid
         assert tools.serve(stop=True).stopped
         marker = tmp_path / "graphify-out" / "kb" / "store.json"
         assert json.loads(marker.read_text()) == {"store": "probe_store:ProbeStore"}
     finally:
-        for process in tools._kb_procs.values():
-            if process.poll() is None:
-                process.terminate()
-                process.wait(10)
-    # Without the backend in Settings, a server does not load the code that the store names.
+        _stop_servers(tools)
+    # A new extension loads the code that the store names only when a call or Settings give the same name.
     with pytest.raises(RuntimeError, match="which loads code"):
         GraphifyTools(workspace_root=lambda: str(tmp_path)).write([{"op": "add_node", "label": "Invoices"}])
+    saved = GraphifyTools(workspace_root=lambda: str(tmp_path), kb_store=lambda: "probe_store:ProbeStore")
+    try:
+        saved.write([{"op": "add_node", "label": "Invoices", "class": "concept"}])
+        assert saved.serve(stop=True).stopped
+    finally:
+        _stop_servers(saved)

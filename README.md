@@ -29,7 +29,8 @@ namespaces, vars, `:require` aliases, cross-file calls, protocols, records and C
   tools keep the local graph: give its URL as `source=`. See
   [Use a hosted knowledge base](#use-a-hosted-knowledge-base).
 - You want to keep the knowledge base in your own storage, for example a database server: write a
-  store backend and name it in Settings. See [Choose the store backend](#choose-the-store-backend).
+  store backend in Python and give it to `graphify.serve`. See
+  [Choose the store backend](#choose-the-store-backend).
 - You want a local copy of that server, for example to read it offline: use `graphify.snapshot`.
   See [Copy a knowledge source](#copy-a-knowledge-source).
 - You want every session to use that server without a question for the token: save it in Vis
@@ -338,35 +339,47 @@ graphify kb serve graphify-out/graph.json --allow-host kb.example.com
 
 graphify keeps the edits, the history and the node moves of a store on this machine in a store
 backend. The default backend is SQLite: the file `graphify-out/kb/store.sqlite`. To keep them in
-your own storage, for example a database server, name another backend in Settings:
+your own storage, for example a database server, write the backend in Python:
+
+1. In a Python file of the project, subclass `graphify.kb_store.KBStore`, or write a function that
+   returns such a store. You can also ask the agent to write it.
+2. Before the first knowledge call of a new store, give the backend to `graphify.serve` as
+   `module:attr`:
+
+   ```python
+   print(graphify.serve(store="stores.tickets:TicketsStore"))  # stores/tickets.py in the project
+   graphify.write([{"op": "add_node", "label": "Billing", "class": "concept"}])
+   ```
+
+The section
+[Use another store](https://github.com/Blockether/graphify/blob/v8/docs/kb.md#use-another-store) of
+the knowledge base guide lists the methods of a backend.
+
+- graphify imports the module from the root of the project that holds the store. Then it calls the
+  attribute with the `kb/` folder.
+- `store=` also takes `sqlite`, `memory` or the name of an entry point in the group
+  `graphify.kb_stores`. Its package must be in the private environment of vis-graphify, next to
+  graphify. `memory` keeps the edits only while the server runs.
+- A new store uses the backend. An existing store keeps its backend, and `serve` refuses another
+  name.
+- A running server keeps its backend. Stop it with `graphify.serve(stop=True)` before you give
+  another one.
+- The later calls give the backend to graphify too, for example `publish` and `rename`. After a
+  restart of the gateway, give `store=` to `serve` again.
+
+Without `store=`, a new store uses the backend in Settings, else the `GRAPHIFY_KB_STORE` environment
+variable, else SQLite:
 
 1. In Settings, open **Extensions** in the **Tools** section, then the **vis-graphify** group.
 2. In **Knowledge store backend**, type the name of the backend and save.
 
-Without this setting, graphify uses the `GRAPHIFY_KB_STORE` environment variable, else SQLite. Set
-the variable like `GRAPHIFY_KB_URL` in [Connect without the form](#connect-without-the-form).
+Set the variable like `GRAPHIFY_KB_URL` in [Connect without the form](#connect-without-the-form).
 
-A name is one of these:
-
-- `sqlite`: the default.
-- `memory`: the server keeps the edits only while it runs. Use it for tests.
-- `module:attr`, for example `team_store:ServerStore`. graphify imports `team_store` from the root
-  of the project that holds the store. Then it calls `ServerStore` with the `kb/` folder.
-- The name of an entry point in the group `graphify.kb_stores`. Its package must be in the private
-  environment of vis-graphify, next to graphify.
-
-To write a backend, subclass `graphify.kb_store.KBStore`. The section
-[Use another store](https://github.com/Blockether/graphify/blob/v8/docs/kb.md#use-another-store) of
-the knowledge base guide lists its methods.
-
-- graphify reads the setting when it starts a server. A running server keeps its backend until
-  `graphify.serve(stop=True)`.
-- The setting applies only to a store without data. An existing store keeps its backend.
 - A persistent backend other than SQLite writes its name to `kb/store.json`. The next server of that
   store uses the same backend.
 - A `module:attr` name in `kb/store.json` loads code, and a cloned project can hold any
-  `kb/store.json`. So graphify opens such a store only when the setting or `GRAPHIFY_KB_STORE` gives
-  the same name. Else the call fails, and the error names the backend.
+  `kb/store.json`. So graphify opens such a store only when `store=`, Settings or
+  `GRAPHIFY_KB_STORE` give the same name. Else the call fails, and the error names the backend.
 - `graphify.snapshot` always copies into SQLite. So Vis itself never loads the code of a backend.
   Only the graphify server does.
 - A hosted server uses the backend of its host: `graphify kb serve --store NAME`.

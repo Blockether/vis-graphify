@@ -808,6 +808,42 @@ def test_the_store_backend_in_settings_reaches_the_kb_children(project, spawner,
     assert GraphifyTools(workspace_root=lambda: str(project))._kb_env()["GRAPHIFY_KB_STORE"] == "memory"
 
 
+def test_serve_gives_the_store_backend_of_the_call_to_the_kb_children(project, spawner, monkeypatch):
+    from vis_graphify.tools import KB_REGISTRY
+
+    monkeypatch.setenv("GRAPHIFY_KB_STORE", "memory")
+    runs = []
+
+    def run(argv, **kwargs):
+        runs.append((argv, kwargs))
+        Path(argv[argv.index("--out") + 1]).write_text("<html></html>", encoding="utf-8")
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    tools = GraphifyTools(workspace_root=lambda: str(project), spawn=spawner, runner=run, kb_store=lambda: "sqlite")
+    assert tools.serve(store=" team_store:TeamStore ").started
+    argv = spawner.calls[-1][0]
+    assert argv[argv.index("--store") + 1] == "team_store:TeamStore"
+    assert json.loads((project / "graphify-out" / KB_REGISTRY).read_text())["store"] == "team_store:TeamStore"
+    # The backend of the call wins over Settings and the environment for the later kb children of the store.
+    tools.publish()
+    ((argv, options),) = runs
+    assert argv[argv.index("kb") + 1] == "export" and options["env"]["GRAPHIFY_KB_STORE"] == "team_store:TeamStore"
+    # The same backend uses the running server. Another backend needs a stop first.
+    assert not tools.serve(store="team_store:TeamStore").started
+    with pytest.raises(RuntimeError, match="then start it with the store memory"):
+        tools.serve(store="memory")
+
+
+def test_serve_refuses_a_store_backend_that_the_store_does_not_keep(project, spawner):
+    kb_dir = project / "graphify-out" / "kb"
+    kb_dir.mkdir()
+    (kb_dir / "store.sqlite").write_bytes(b"")
+    tools = GraphifyTools(workspace_root=lambda: str(project), spawn=spawner)
+    with pytest.raises(ValueError, match="keeps its knowledge base in the store 'sqlite', not in 'memory'"):
+        tools.serve(store="memory")
+    assert spawner.calls == []
+
+
 def test_snapshot_export_refuses_unsafe_files(tmp_path):
     from vis_graphify.tools import _kb_write_export
 
