@@ -1,6 +1,6 @@
 [project]
 name = "vis-graphify"
-version = "0.15.2"
+version = "0.15.3"
 description = "Code knowledge graphs for Vis with graphify: search, change impact, exact references, safe renames and moves, domain flows, and a knowledge base server with ontology, documents and undoable edits."
 keywords = ["graph", "code"]
 requires-python = ">=3.12"
