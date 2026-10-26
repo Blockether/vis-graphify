@@ -8,7 +8,7 @@ import blockether.vis.extension as vis
 
 from vis_graphify import presentation
 from vis_graphify.kb import normalize_url
-from vis_graphify.tools import GraphifyTools, HubsResult, ImpactResult, ReferencesResult, SearchResult
+from vis_graphify.tools import CrapResult, GraphifyTools, HubsResult, ImpactResult, ReferencesResult, SearchResult
 
 VERSION = "0.15.3"
 
@@ -19,6 +19,7 @@ vis.sequence(field="nodes")(SearchResult)
 vis.sequence(field="references")(ReferencesResult)
 vis.sequence(field="impacts")(ImpactResult)
 vis.sequence(field="hubs")(HubsResult)
+vis.sequence(field="entries")(CrapResult)
 
 
 def _bind(name, label, build, arguments=(), *, tag: _Tag = "observation", show_start=False):
@@ -85,6 +86,7 @@ _bind(
     show_start=True,
 )
 _bind("domain", "Map domain flows", presentation.domain, ("root", "plugins"), tag="mutation", show_start=True)
+_bind("crap", "Score code risk", presentation.crap, ("paths", "root", "changed", "threshold"), show_start=True)
 
 _bind(
     "serve",
@@ -141,6 +143,7 @@ affected lists the dependent functions in `r.functions` and the private ones in 
 rename, add_parameter, move and move_file write nothing on a conflict. After a write, they run the project check. When the result says `passed`, reply at once.
 Name a node by `pkg.Name`, `Class.method`, `ns/name`, `crate::mod::name` or bare name. When the task names the file, use `src/money/format.ts::name`.
 Also: graphify.explain(node) · shortest_path(a, b) · search(pattern) · hubs() · domain() (edd-core flows -> DOMAIN.md).
+print(graphify.crap(changed=True)) scores Clojure and Python functions: CRAP above 10 needs tests or a split. For fresh Clojure coverage, run clj.coverage first; `stale_reports` lists old reports.
 Knowledge (ontology, notes, documents) is part of the same graph: search and explain return it next to the code. The code itself always comes from the local graph.
 A knowledge source is "local" (the store in graphify-out/), a store or snapshot folder, or a server URL. A call without source=... uses the configured server, else the local store. A server asks the person for its token in a masked form; never ask for it in chat.
   graphify.write([{"op": "add_node", "label": "Billing", "class": "concept"}, {"op": "add_edge", ...}])  one undoable change; doc("graphify.write") lists the ops · undo() reverts it

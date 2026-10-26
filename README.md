@@ -21,6 +21,8 @@ namespaces, vars, `:require` aliases, cross-file calls, protocols, records and C
 - You join an unknown codebase and want its central code first: use `graphify.hubs`.
 - You want to see how commands, queries and events flow between your services, or find calls to
   commands that no service registers: use `graphify.domain`. See [Domain flows](#domain-flows).
+- You want to know which Clojure or Python functions are complex and have few tests: use
+  `graphify.crap`. See [Risky functions](#risky-functions).
 - You want to keep concepts, notes and documents next to the code graph, check them against an
   ontology and see them in the browser: use `graphify.write`, `graphify.ingest` and
   `graphify.serve`. `graphify.search` and `graphify.explain` then show them next to the code. See
@@ -63,6 +65,7 @@ The agent uses these tools in its Python sandbox:
 | `graphify.move("my.ns/run", "src/my/runner.clj", apply=True)` | Moves one top-level definition to another file, also a new one. Every use, import and require follows. |
 | `graphify.move_file("src/my/ns.clj", "src/my/core.clj", apply=True)` | Moves a file and renames its module or namespace at every use. For Clojure, the test namespace moves too. |
 | `graphify.domain(root=".")` | The domain model: services, commands, queries, events, links, schemas and findings. Writes `DOMAIN.md`. |
+| `graphify.crap(changed=True)` | CRAP scores of Clojure and Python functions: complexity and test coverage, the worst first. |
 
 You can name a node by its id, its label (`run()`), its bare name (`run`) or a qualified name
 (`my.ns/run`, `orders.Order`, `Ledger.post` or `crate::util::sum`), or by its file and name
@@ -135,6 +138,22 @@ The result has `diff`, `created`, `deleted`, `renames`, `notes`, `conflicts`, `m
 nothing when a conflict blocks the move. Examples are a name that the target file already defines,
 a target file that exists, or an import cycle. Without `apply=True`, the call is a preview. A
 written move updates the graph and runs the project check, as `rename` does.
+
+## Risky functions
+
+`graphify.crap()` gives each Clojure and Python function a CRAP score: `CC² × (1 − coverage)³ + CC`.
+CC is the cyclomatic complexity. A fully tested function scores its complexity. A score above 10
+means that the function needs tests or a split.
+
+1. Run your tests with coverage. For Clojure, call `clj.coverage()`: it runs Lazytest with
+   Clofidence and writes `target/coverage/clofidence.json`. For Python, run `coverage json`.
+2. Call `print(graphify.crap())`, or `graphify.crap(changed=True)` for the functions that you
+   changed since `HEAD`.
+
+The result lists the worst functions first. `over` counts the scores above `threshold`, and
+`is_passed` is true when there are none. A function without coverage data is ranked by its
+complexity. `stale_reports` names reports that are older than the code: run the tests again.
+A cache per file makes a second call on a large project take milliseconds.
 
 ## Domain flows
 

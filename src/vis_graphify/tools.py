@@ -458,6 +458,66 @@ class MoveResult:
         return "\n".join(lines)
 
 
+@dataclass(frozen=True)
+class CrapEntry:
+    """The CRAP score of one Clojure or Python function."""
+
+    name: Annotated[str, "Qualified name: `my.ns/f` in Clojure, `pkg.module.f` or `pkg.module.Class.m` in Python."]
+    file: Annotated[str, "Source file, relative to the project root."]
+    line: Annotated[int, "1-based first line."]
+    language: Annotated[str, "`clojure` or `python`."]
+    complexity: Annotated[int, "Cyclomatic complexity."]
+    coverage: Annotated[float | None, "Percent of the function that the tests ran; None without coverage data."]
+    crap: Annotated[float | None, "`CC² × (1 − coverage)³ + CC`; None without coverage data."]
+
+    @property
+    def score(self) -> float:
+        """The CRAP score, else the complexity when the function has no coverage data."""
+        return self.crap if self.crap is not None else float(self.complexity)
+
+    def __str__(self) -> str:
+        covered = "no coverage" if self.coverage is None else f"{self.coverage:.0f}% covered"
+        score = f"CRAP {self.crap:.1f}" if self.crap is not None else f"CC {self.complexity}"
+        return f"{score}  {self.name}  {self.file}:{self.line}  (CC {self.complexity}, {covered})"
+
+
+@dataclass(frozen=True)
+class CrapResult:
+    """CRAP scores of a project's Clojure and Python functions."""
+
+    threshold: Annotated[float, "Scores above it count in `over`."]
+    total: Annotated[int, "Count of scored functions."]
+    over: Annotated[int, "Count of functions that score above `threshold`."]
+    measured: Annotated[int, "Count of functions with coverage data."]
+    files: Annotated[int, "Count of scanned source files."]
+    entries: Annotated[
+        tuple[CrapEntry, ...], "Functions with coverage data first, each group worst first; `limit` cuts the list."
+    ]
+    coverage_reports: Annotated[tuple[str, ...], "Coverage reports that were read, relative to the root."]
+    stale_reports: Annotated[tuple[str, ...], "Reports older than a scored source file: run the tests again."]
+    parse_errors: Annotated[tuple[str, ...], "Files that did not parse, with the reason."]
+    truncated: Annotated[bool, "True when `limit` cut the list."]
+
+    @property
+    def is_passed(self) -> bool:
+        """True when no function scores above the threshold."""
+        return self.over == 0
+
+    def __str__(self) -> str:
+        header = (
+            f"{self.over} of {self.total} functions over CRAP {self.threshold:g}, "
+            f"{self.measured} with coverage, in {self.files} files:"
+        )
+        lines = [_listing(header, self.entries, "entries")]
+        if not self.coverage_reports:
+            lines.append("No coverage report: scores are complexity only. Run clj.coverage or `coverage json`.")
+        if self.stale_reports:
+            lines.append("Older than the code, run the tests again: " + ", ".join(self.stale_reports))
+        if self.parse_errors:
+            lines.append("Not parsed: " + "; ".join(self.parse_errors[:10]))
+        return "\n".join(lines)
+
+
 def _relative(root: Path, file: str) -> str:
     path = Path(file)
     return path.relative_to(root).as_posix() if path.is_relative_to(root) else file
@@ -1624,6 +1684,70 @@ class GraphifyTools:
             findings=findings,
             plugin_errors=tuple(line[len(prefix) :] for line in stderr.splitlines() if line.startswith(prefix)),
             truncated=len(raw) > limit,
+        )
+
+    def crap(
+        self,
+        paths: list[str] | None = None,
+        root: str = ".",
+        threshold: float = 10.0,
+        changed: bool | str = False,
+        coverage: list[str] | None = None,
+        tests: bool = False,
+        limit: int = 30,
+    ) -> CrapResult:
+        """Score Clojure and Python functions with CRAP: high complexity with few tests.
+
+        `CRAP = CC² × (1 − coverage)³ + CC`. A fully tested function scores its
+        complexity; above 10 it needs tests or a split. Complexity comes from the
+        tree-sitter syntax tree. Coverage comes from reports that a test run wrote:
+        Clofidence JSON of `clj.coverage` (`target/coverage/clofidence.json`),
+        coverage.py JSON (`coverage.json`) or LCOV. A function without coverage
+        data is ranked by its complexity. A cache per file makes repeated calls fast.
+
+        Args:
+            paths: Files or directories, relative to the root. None scores the whole project.
+            root: Project directory, relative to the workspace root.
+            threshold: Scores above it count in `over`.
+            changed: Only functions changed since `HEAD`, or since the Git revision that it names.
+            coverage: Coverage report paths, relative to the root. None finds the usual reports.
+            tests: Also score test files.
+            limit: Maximum count of returned functions. The counts stay complete.
+        """
+        from graphify import crap as scores
+
+        path = self._root(root)
+        report = scores.analyze(
+            path,
+            list(paths or ()),
+            coverage=coverage,
+            threshold=threshold,
+            changed=changed,
+            include_tests=tests,
+        )
+        entries = tuple(
+            CrapEntry(
+                name=f"{e.namespace}/{e.name}" if e.language == "clojure" else f"{e.namespace}.{e.name}",
+                file=e.path,
+                line=e.line,
+                language=e.language,
+                complexity=e.complexity,
+                coverage=e.coverage,
+                crap=e.crap,
+            )
+            for e in report.entries
+        )
+        return CrapResult(
+            threshold=report.threshold,
+            total=len(entries),
+            over=len(report.over),
+            measured=sum(1 for e in entries if e.coverage is not None),
+            files=report.files,
+            entries=entries[:limit],
+            coverage_reports=tuple(_relative(path, r) for r in report.coverage_reports),
+            stale_reports=tuple(_relative(path, r) for r in report.stale_reports),
+            parse_errors=tuple(report.parse_errors),
+            truncated=len(entries) > limit,
         )
 
     # -- knowledge -------------------------------------------------------------

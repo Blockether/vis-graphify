@@ -16,6 +16,7 @@ from vis_graphify.kb import (
 )
 from vis_graphify.tools import (
     BuildResult,
+    CrapResult,
     DomainReport,
     Explanation,
     GraphStatus,
@@ -233,6 +234,45 @@ def references(result: ReferencesResult) -> vis.ActivityPresentation:
         "Find code references",
         f"{_plural(result.total, 'reference')} in {_plural(len(result.files), 'file')}{more}",
         content,
+    )
+
+
+def crap(result: CrapResult) -> vis.ActivityPresentation:
+    if not result.total:
+        return vis.ActivityPresentation(
+            "Score code risk", "no functions", (vis.ActivityText("No Clojure or Python function matched."),)
+        )
+    shown = result.entries[:30]
+    rows = tuple(
+        (
+            entry.name,
+            f"{entry.file}:{entry.line}",
+            str(entry.complexity),
+            "–" if entry.coverage is None else f"{entry.coverage:.0f}%",
+            "–" if entry.crap is None else f"{entry.crap:.1f}",
+        )
+        for entry in shown
+    )
+    content: list = [
+        vis.ActivityTable(
+            columns=("Function", "Location", "CC", "Coverage", "CRAP"),
+            rows=rows,
+            paths=tuple(entry.file for entry in shown),
+        )
+    ]
+    if result.total > len(shown):
+        content.append(vis.ActivityText(f"… {result.total - len(shown)} more functions."))
+    if not result.coverage_reports:
+        content.append(vis.ActivityText("No coverage report: the scores are complexity only."))
+    if result.stale_reports:
+        content.append(vis.ActivityText("Older than the code: " + ", ".join(result.stale_reports)))
+    if result.parse_errors:
+        content.append(vis.ActivityText("Not parsed:\n" + "\n".join(result.parse_errors[:10])))
+    measured = f", {result.measured} with coverage" if result.coverage_reports else ", no coverage"
+    return vis.ActivityPresentation(
+        "Score code risk",
+        f"{result.over} of {_plural(result.total, 'function')} over {result.threshold:g}{measured}",
+        tuple(content),
     )
 
 

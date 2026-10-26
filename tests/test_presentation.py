@@ -9,6 +9,8 @@ from vis_graphify import presentation
 from vis_graphify.tools import (
     BuildResult,
     CallEdit,
+    CrapEntry,
+    CrapResult,
     DomainFinding,
     DomainReport,
     Edge,
@@ -233,6 +235,7 @@ def test_extension_registers_every_tool_with_an_activity(monkeypatch):
             "move",
             "move_file",
             "domain",
+            "crap",
             "serve",
             "snapshot",
             "write",
@@ -388,3 +391,25 @@ def test_moves_show_the_knowledge_base():
     assert str(moved).endswith("\nKnowledge base " + told[0]) and str(renamed).endswith("\nKnowledge base " + told[0])
     quiet = presentation.move(dataclasses.replace(moved, kb=()))
     assert not any(getattr(block, "text", "").startswith("Knowledge base") for block in quiet.content)
+
+
+def test_crap_states():
+    entry = CrapEntry("app.core/f", "src/app/core.clj", 3, "clojure", 4, 25.0, 10.75)
+    bare = CrapEntry("app.y", "app/y.py", 9, "python", 2, None, None)
+    result = CrapResult(10.0, 2, 1, 1, 2, (entry, bare), ("target/coverage/clofidence.json",), (), (), False)
+    presented = presentation.crap(result)
+    assert summary(presented) == "1 of 2 functions over 10, 1 with coverage"
+    (table,) = [block for block in presented.content if isinstance(block, vis.ActivityTable)]
+    assert table.rows == (
+        ("app.core/f", "src/app/core.clj:3", "4", "25%", "10.8"),
+        ("app.y", "app/y.py:9", "2", "–", "–"),
+    )
+    bare_only = CrapResult(10.0, 1, 0, 0, 1, (bare,), (), ("app/y.py",), ("bad.py: boom",), False)
+    texts = [getattr(block, "text", "") for block in presentation.crap(bare_only).content]
+    assert summary(presentation.crap(bare_only)) == "0 of 1 function over 10, no coverage"
+    assert "No coverage report: the scores are complexity only." in texts and "Not parsed:\nbad.py: boom" in texts
+    empty = CrapResult(10.0, 0, 0, 0, 0, (), (), (), (), False)
+    assert summary(presentation.crap(empty)) == "no functions"
+    render = presentation.renderer("Score code risk", presentation.crap, ("paths", "root"))
+    failed = render(phase="failure", args=(["src"],), error=FileNotFoundError("coverage report not found: x"))
+    assert summary(failed) == "failed"

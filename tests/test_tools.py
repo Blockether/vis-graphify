@@ -337,3 +337,41 @@ def test_moved_nodes_report_the_moves_before_a_failure(project, monkeypatch):
     assert lines == (
         "graphify-out/kb: 1 moved, 0 pending, 0 with no records at the old id, then not updated: error: graph.json is missing",
     )
+
+
+def test_crap_scores_python_with_coverage_and_finds_stale_reports(tmp_path):
+    (tmp_path / "app.py").write_text(
+        "def pick(x):\n    if x:\n        return 1\n    return 2\n\n\ndef free():\n    return 3\n", "utf-8"
+    )
+    report = {"files": {"app.py": {"executed_lines": [1, 2, 3, 7], "missing_lines": [4, 8]}}}
+    (tmp_path / "coverage.json").write_text(json.dumps(report), "utf-8")
+    os.utime(tmp_path / "coverage.json", (1, 1))
+    result = tools_for(tmp_path).crap(threshold=2, limit=1)
+    assert (result.total, result.files, result.measured, result.over, result.truncated) == (2, 1, 2, 1, True)
+    (worst,) = result.entries
+    assert (worst.name, worst.file, worst.line, worst.complexity) == ("app.pick", "app.py", 1, 2)
+    assert worst.coverage == 66.6667 and worst.crap == worst.score == 2.1481  # body lines 2-4, two ran
+    assert result.coverage_reports == ("coverage.json",) and result.stale_reports == ("coverage.json",)
+    assert not result.is_passed
+    assert str(result).startswith("1 of 2 functions over CRAP 2, 2 with coverage, in 1 files:")
+
+
+def test_crap_without_coverage_ranks_by_complexity(tmp_path):
+    (tmp_path / "src" / "app").mkdir(parents=True)
+    (tmp_path / "src" / "app" / "core.clj").write_text(
+        "(ns app.core)\n\n(defn f [x]\n  (cond (= x 1) :a\n        :else :b))\n", "utf-8"
+    )
+    result = tools_for(tmp_path).crap()
+    (entry,) = result.entries
+    assert (entry.name, entry.complexity, entry.coverage, entry.crap, entry.score) == ("app.core/f", 2, None, None, 2.0)
+    assert result.is_passed and result.coverage_reports == ()
+    assert "No coverage report" in str(result)
+
+
+def test_crap_of_an_empty_project_and_a_missing_report(tmp_path):
+    empty = tools_for(tmp_path).crap()
+    assert (empty.total, empty.entries, empty.is_passed) == (0, (), True)
+    with pytest.raises(FileNotFoundError, match="coverage report not found"):
+        tools_for(tmp_path).crap(coverage=["missing.json"])
+    with pytest.raises(NotADirectoryError):
+        tools_for(tmp_path).crap(root="nope")
