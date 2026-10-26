@@ -10,7 +10,7 @@ from vis_graphify import presentation
 from vis_graphify.kb import normalize_url
 from vis_graphify.tools import CrapResult, GraphifyTools, HubsResult, ImpactResult, ReferencesResult, SearchResult
 
-VERSION = "0.16.0"
+VERSION = "0.16.1"
 
 _Tag = Literal["observation", "mutation"]
 
