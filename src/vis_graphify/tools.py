@@ -510,7 +510,9 @@ class CrapResult:
         )
         lines = [_listing(header, self.entries, "entries")]
         if not self.coverage_reports:
-            lines.append("No coverage report: scores are complexity only. Run clj.coverage or `coverage json`.")
+            lines.append(
+                "No coverage report: scores are complexity only. Run clj.run_tests(coverage=True) or py.run_tests(coverage=True)."
+            )
         if self.stale_reports:
             lines.append("Older than the code, run the tests again: " + ", ".join(self.stale_reports))
         if self.parse_errors:
@@ -1701,8 +1703,9 @@ class GraphifyTools:
         `CRAP = CC² × (1 − coverage)³ + CC`. A fully tested function scores its
         complexity; above 10 it needs tests or a split. Complexity comes from the
         tree-sitter syntax tree. Coverage comes from reports that a test run wrote:
-        Clofidence JSON of `clj.coverage` (`target/coverage/clofidence.json`),
-        coverage.py JSON (`coverage.json`) or LCOV. A function without coverage
+        Clofidence JSON of `clj.run_tests(coverage=True)`
+        (`target/coverage/clofidence.json`), coverage.py JSON of
+        `py.run_tests(coverage=True)` (`coverage.json`) or LCOV. A function without coverage
         data is ranked by its complexity. A cache per file makes repeated calls fast.
 
         Args:

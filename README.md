@@ -145,8 +145,10 @@ written move updates the graph and runs the project check, as `rename` does.
 CC is the cyclomatic complexity. A fully tested function scores its complexity. A score above 10
 means that the function needs tests or a split.
 
-1. Run your tests with coverage. For Clojure, call `clj.coverage()`: it runs Lazytest with
-   Clofidence and writes `target/coverage/clofidence.json`. For Python, run `coverage json`.
+1. Run your tests with coverage: `clj.run_tests(coverage=True)` or `py.run_tests(coverage=True)`.
+   The Clojure run uses Lazytest with Clofidence and writes `target/coverage/clofidence.json`.
+   The Python run uses coverage.py and writes `coverage.json`. Both results list the gaps:
+   the code and the branches that never ran.
 2. Call `print(graphify.crap())`, or `graphify.crap(changed=True)` for the functions that you
    changed since `HEAD`.
 

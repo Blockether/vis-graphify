@@ -143,7 +143,7 @@ affected lists the dependent functions in `r.functions` and the private ones in 
 rename, add_parameter, move and move_file write nothing on a conflict. After a write, they run the project check. When the result says `passed`, reply at once.
 Name a node by `pkg.Name`, `Class.method`, `ns/name`, `crate::mod::name` or bare name. When the task names the file, use `src/money/format.ts::name`.
 Also: graphify.explain(node) · shortest_path(a, b) · search(pattern) · hubs() · domain() (edd-core flows -> DOMAIN.md).
-print(graphify.crap(changed=True)) scores Clojure and Python functions: CRAP above 10 needs tests or a split. For fresh Clojure coverage, run clj.coverage first; `stale_reports` lists old reports.
+print(graphify.crap(changed=True)) scores Clojure and Python functions: CRAP above 10 needs tests or a split. For fresh coverage, run clj.run_tests(coverage=True) or py.run_tests(coverage=True) first; `stale_reports` lists old reports.
 Knowledge (ontology, notes, documents) is part of the same graph: search and explain return it next to the code. The code itself always comes from the local graph.
 A knowledge source is "local" (the store in graphify-out/), a store or snapshot folder, or a server URL. A call without source=... uses the configured server, else the local store. A server asks the person for its token in a masked form; never ask for it in chat.
   graphify.write([{"op": "add_node", "label": "Billing", "class": "concept"}, {"op": "add_edge", ...}])  one undoable change; doc("graphify.write") lists the ops · undo() reverts it
