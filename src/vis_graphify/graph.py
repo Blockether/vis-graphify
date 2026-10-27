@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import re
 from collections import Counter, deque
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -93,6 +94,57 @@ def stale(graph: Graph, root: str | Path) -> bool:
         except FileNotFoundError:
             continue
     return False
+
+
+@dataclass(frozen=True)
+class Changes:
+    """The files that differ from a graph since its build, relative to the project root."""
+
+    edited: frozenset[str]
+    added: frozenset[str]
+    deleted: frozenset[str]
+
+    def __bool__(self) -> bool:
+        return bool(self.edited or self.added or self.deleted)
+
+
+def changes(graph: Graph, root: str | Path, listed: Iterable[str]) -> Changes | None:
+    """The source files that changed after the build of `graph`.
+
+    `listed` holds every file of the project that git shows: tracked, or untracked and
+    not ignored. graphify skips the same ignored files. A listed file without a node
+    that changed after the build counts as added. Returns None when a source file of
+    the graph is not listed: then only a new build can tell what changed.
+    """
+    built = graph.path.stat().st_mtime_ns
+    root = Path(root)
+    listed = set(listed)
+    files = {str(node.get("source_file")) for node in graph.nodes.values() if node.get("source_file")}
+    edited, deleted = set(), set()
+    for file in files:
+        try:
+            changed = (root / file).stat().st_mtime_ns > built
+        except FileNotFoundError:
+            deleted.add(file)
+            continue
+        if file not in listed:
+            return None
+        if changed:
+            edited.add(file)
+    added = set()
+    for file in listed - files:
+        try:
+            if (root / file).stat().st_mtime_ns > built:
+                added.add(file)
+        except FileNotFoundError:
+            continue  # git still lists a deleted tracked file
+    return Changes(frozenset(edited), frozenset(added), frozenset(deleted))
+
+
+def exact(graph: Graph, reference: str, node_id: str) -> bool:
+    """Whether `reference` is the id or the full `module/name` of the node, not a shorter name."""
+    reference = reference.strip()
+    return reference == node_id or _metadata_name(graph.nodes[node_id]) == _bare(reference)
 
 
 def parse(path: Path, data: dict) -> Graph:

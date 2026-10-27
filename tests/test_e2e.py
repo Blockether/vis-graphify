@@ -1,9 +1,12 @@
 """Build a real graph of a small Clojure project with the pinned graphify fork."""
 
+import os
+import subprocess
 import textwrap
 
 import pytest
 
+from vis_graphify import graph as g
 from vis_graphify import tools as tools_module
 from vis_graphify.tools import GraphifyTools
 
@@ -236,6 +239,65 @@ def test_real_references_and_rename(tmp_path):
     core = (src / "core.clj").read_text()
     assert ":refer [open-conn]" in core and "(defn local [connect] (connect :connect))" in core
     assert done.text_mentions >= 1 and not any(m.endswith(":connect") for m in done.mentions)
+
+
+def _git_project(tmp_path):
+    """`_rename_project` in a git work tree, where `references` can skip the graph update."""
+    tools, src = _rename_project(tmp_path)
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    return tools, src, tmp_path / "graphify-out" / "graph.json"
+
+
+def _edit(path, graph, text):
+    """Write `text` to `path` with a time after the build of `graph`."""
+    path.write_text(text)
+    os.utime(path, ns=(graph.stat().st_mtime_ns + 10**9,) * 2)
+
+
+def test_real_references_read_clojure_edits_without_a_graph_update(tmp_path):
+    # Before this fix, each call after an edit ran a full `graphify update`: 65-98 s on the Vis repository.
+    tools, src, graph = _git_project(tmp_path)
+    built = graph.stat().st_mtime_ns
+    _edit(src / "db.clj", graph, "(ns demo.db)\n\n;; moved down\n\n(defn connect [url] {:url url})\n")
+    _edit(src / "core.clj", graph, (src / "core.clj").read_text() + "\n(defn again [u] (db/connect u))\n")
+    found = tools.references("demo.db/connect")
+    short = tools.references("connect()")
+    assert graph.stat().st_mtime_ns == built
+    assert found.node.line == 5
+    assert ("src/demo/core.clj", 9, "use") in [(ref.file, ref.line, ref.role) for ref in found.references]
+    tools.build(cluster=False, timeout_s=600)
+    assert found == short == tools.references("demo.db/connect")
+
+
+def test_real_references_update_the_graph_for_a_new_file_or_a_rival_name(tmp_path):
+    tools, src, graph = _git_project(tmp_path)
+    built = graph.stat().st_mtime_ns
+    _edit(src / "extra.clj", graph, "(ns demo.extra\n  (:require [demo.db :as db]))\n\n(defn go [] (db/connect 1))\n")
+    assert "src/demo/extra.clj" in tools.references("demo.db/connect").files
+    assert graph.stat().st_mtime_ns > built
+    _edit(src / "core.clj", graph, (src / "core.clj").read_text() + "\n(defn connect [] :mine)\n")
+    with pytest.raises(g.AmbiguousNode):
+        tools.references("connect()")
+
+
+def test_real_references_update_the_graph_for_a_removed_definition(tmp_path):
+    tools, src, graph = _git_project(tmp_path)
+    _edit(src / "db.clj", graph, "(ns demo.db)\n\n(defn open [url] {:url url})\n")
+    with pytest.raises(g.NodeNotFound):
+        tools.references("demo.db/connect")
+
+
+def test_real_references_update_the_graph_after_an_edit_outside_clojure(tmp_path):
+    (tmp_path / "util.py").write_text("def helper(x):\n    return x\n")
+    (tmp_path / "main.py").write_text("from util import helper\n")
+    tools = GraphifyTools(workspace_root=lambda: str(tmp_path))
+    assert tools.build(cluster=False, timeout_s=600).nodes
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    graph = tmp_path / "graphify-out" / "graph.json"
+    built = graph.stat().st_mtime_ns
+    _edit(tmp_path / "main.py", graph, "from util import helper\n\nhelper(1)\n")
+    assert ("main.py", 3, "use") in [(ref.file, ref.line, ref.role) for ref in tools.references("helper()").references]
+    assert graph.stat().st_mtime_ns > built
 
 
 def test_real_rename_conflict_writes_nothing(tmp_path):

@@ -6,10 +6,12 @@ This module is plain Python. `extension.py` binds it to Vis.
 from __future__ import annotations
 
 import base64
+import contextlib
 import dataclasses
 import difflib
 import fnmatch
 import hashlib
+import io
 import json
 import os
 import re
@@ -21,6 +23,7 @@ import sys
 import tempfile
 import threading
 import time
+import warnings
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
@@ -535,9 +538,127 @@ def _within(file: str | None, scope: str) -> bool:
     return file == scope or file.startswith(scope.rstrip("/") + "/")
 
 
+_RAWS: dict[Path, tuple[g.Graph, dict]] = {}
+
+
 def _raw(graph: g.Graph) -> dict:
-    """The graph.json shape that `graphify.refactor` reads, from the cached graph."""
-    return {"nodes": list(graph.nodes.values()), "links": [dataclasses.asdict(link) for link in graph.links]}
+    """The graph.json shape that `graphify.refactor` reads, from the cached graph.
+
+    It is built once for each loaded graph. `graphify.refactor` only reads it.
+    """
+    cached = _RAWS.get(graph.path)
+    if cached and cached[0] is graph:
+        return cached[1]
+    raw = {"nodes": list(graph.nodes.values()), "links": [dict(vars(link)) for link in graph.links]}
+    _RAWS[graph.path] = (graph, raw)
+    return raw
+
+
+def _git_files(root: Path) -> set[str] | None:
+    """Every file under `root` that git shows: tracked, or untracked and not ignored.
+
+    Returns None outside a git work tree or when git fails. The caller then updates the graph.
+    """
+    argv = ["git", "-c", "core.quotepath=off", "ls-files", "-z", "--cached", "--others", "--exclude-standard"]
+    try:
+        done = subprocess.run(argv, cwd=str(root), capture_output=True, timeout=60)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if done.returncode != 0:
+        return None
+    return {file for file in done.stdout.decode("utf-8", "surrogateescape").split("\0") if file}
+
+
+def _clojure_var(node: dict) -> bool:
+    """Whether `graphify.refactor` resolves the node as a Clojure var, by namespace and name."""
+    meta = node.get("metadata") or {}
+    return (
+        meta.get("language") == "clojure"
+        and meta.get("kind") == "var"
+        and bool(meta.get("module") and meta.get("name"))
+    )
+
+
+def _site_suffixes(refactor: Any, node: dict) -> frozenset[str]:
+    """The suffixes of the files that `refactor.references` reads for the node."""
+    if _clojure_var(node):
+        return frozenset(refactor.CLOJURE_SUFFIXES)
+    family = refactor.GRAMMARS.get(Path(str(node.get("source_file") or "")).suffix.lower(), (None,))[0]
+    return frozenset(s for s, grammar in refactor.GRAMMARS.items() if family and grammar[0] == family)
+
+
+def _same_target(graph: g.Graph, root: Path, reference: str, node_id: str, edited: frozenset[str]) -> bool:
+    """Whether `reference` still names the node after the edits of the files that spell its last name.
+
+    graphify extracts those files again into a temporary cache, so `graphify-out/` stays unchanged.
+    Their new nodes replace their old ones, and `reference` must then resolve to the same node.
+    """
+    name = re.split(r"::|[/.#:]", reference.strip().removesuffix("()"))[-1].lower().encode("utf-8")
+    if not name:
+        return False
+    spelling = set()
+    for file in edited:
+        try:
+            if name in (root / file).read_bytes().lower():
+                spelling.add(file)
+        except OSError:
+            return False
+    if not spelling:
+        return True
+    from graphify.extract import extract
+
+    with tempfile.TemporaryDirectory() as cache, contextlib.redirect_stdout(io.StringIO()), warnings.catch_warnings():
+        # A new cache root for each call only resets the stat index of graphify, which a scratch cache needs not.
+        warnings.filterwarnings("ignore", message="stat index switched", category=RuntimeWarning)
+        fresh = extract([root / file for file in sorted(spelling)], cache_root=Path(cache), root=root, parallel=False)
+    if fresh.get("failed_sources"):
+        return False
+    nodes = [node for node in graph.nodes.values() if node.get("source_file") not in spelling] + fresh["nodes"]
+    links = [vars(link) for link in graph.links if link.source_file not in spelling] + fresh.get("edges", [])
+    try:
+        return g.resolve(g.parse(graph.path, {"nodes": nodes, "links": links}), reference) == node_id
+    except (g.NodeNotFound, g.AmbiguousNode):
+        return False
+
+
+def _references_without_update(refactor: Any, path: Path, node: str) -> tuple[g.Graph, str, list] | None:
+    """The sites of `node` from the current graph, or None when an edit after its build can change them.
+
+    `refactor.references` reads the current files, so the edits inside them count. The graph gives
+    the target and the files to read. Those stay right while no file that can hold a site is new or
+    deleted, and outside Clojure while none is edited. A short name must still name the same node
+    after the edits. An edited definition file must still define it.
+    """
+    if not g.graph_path(path).is_file():
+        return None
+    graph = g.load(path)
+    if not g.stale(graph, path):
+        node_id = g.resolve(graph, node)
+        return graph, node_id, refactor.references(_raw(graph), node_id, path)
+    listed = _git_files(path)
+    delta = g.changes(graph, path, listed) if listed is not None else None
+    if delta is None:
+        return None
+    try:
+        node_id = g.resolve(graph, node)
+    except (g.NodeNotFound, g.AmbiguousNode):
+        return None  # an edit can add the node or remove a rival
+    target = graph.nodes[node_id]
+    suffixes = _site_suffixes(refactor, target)
+
+    def touched(files: frozenset[str]) -> bool:
+        return any(Path(file).suffix.lower() in suffixes for file in files)
+
+    if touched(delta.added) or touched(delta.deleted) or (not _clojure_var(target) and touched(delta.edited)):
+        return None
+    if not g.exact(graph, node, node_id) and not _same_target(graph, path, node, node_id, delta.edited):
+        return None
+    sites = refactor.references(_raw(graph), node_id, path)
+    file = str(target.get("source_file") or "")
+    defined = [s for s in sites if s.role == "definition" and _relative(path, s.file) == file]
+    if file in delta.edited and len(defined) != 1:
+        return None
+    return graph, node_id, sites
 
 
 def _move_maps(root: Path, plan) -> tuple[dict[str, str], dict[str, str], set[str]]:
@@ -1405,12 +1526,19 @@ class GraphifyTools:
         from graphify import refactor
 
         path = self._root(root)
-        graph = self._graph(path)
-        node_id = g.resolve(graph, node)
-        sites = refactor.references(_raw(graph), node_id, path)
+        answer = _references_without_update(refactor, path, node)
+        if answer is None:
+            graph = self._graph(path)
+            node_id = g.resolve(graph, node)
+            answer = graph, node_id, refactor.references(_raw(graph), node_id, path)
+        graph, node_id, sites = answer
         found = tuple(Reference(_relative(path, s.file), s.line, s.col, s.role, s.text, s.qualified) for s in sites)
         files = tuple(sorted({ref.file for ref in found}))
-        return ReferencesResult(_node(graph, node_id), len(found), files, found[:limit], len(found) > limit)
+        target = _node(graph, node_id)
+        lines = [ref.line for ref in found if ref.role == "definition" and ref.file == target.file]
+        if lines and target.line not in lines:
+            target = dataclasses.replace(target, line=lines[0])  # an edit moved it after the build
+        return ReferencesResult(target, len(found), files, found[:limit], len(found) > limit)
 
     def rename(
         self, node: str, new_name: str, root: str = ".", apply: bool = False, check: bool = True

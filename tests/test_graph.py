@@ -1,4 +1,5 @@
 import json
+import os
 
 import pytest
 
@@ -12,6 +13,23 @@ def test_load_reuses_unchanged_graph_and_reloads_changed(project):
     data["nodes"].append({"id": "new", "label": "new()"})
     (project / "graphify-out/graph.json").write_text(json.dumps(data))
     assert "new" in g.load(project).nodes
+
+
+def test_changes_finds_edited_added_and_deleted_files(tmp_path):
+    out = tmp_path / "graphify-out"
+    out.mkdir()
+    nodes = [{"id": f, "label": f, "source_file": f} for f in ("a.clj", "b.clj", "gone.clj")]
+    (out / "graph.json").write_text(json.dumps({"nodes": nodes, "links": []}))
+    built = (out / "graph.json").stat().st_mtime_ns
+    for name, later in (("a.clj", True), ("b.clj", False), ("old.md", False), ("new.clj", True)):
+        (tmp_path / name).write_text("x")
+        os.utime(tmp_path / name, ns=(built + (10**9 if later else -(10**9)),) * 2)
+    graph = g.load(tmp_path)
+    listed = {"a.clj", "b.clj", "old.md", "new.clj", "gone.clj"}
+    found = g.changes(graph, tmp_path, listed)
+    assert found == g.Changes(frozenset({"a.clj"}), frozenset({"new.clj"}), frozenset({"gone.clj"}))
+    assert found and not g.Changes(frozenset(), frozenset(), frozenset())
+    assert g.changes(graph, tmp_path, listed - {"b.clj"}) is None  # git ignores a file of the graph
 
 
 def test_load_without_graph_raises(tmp_path):

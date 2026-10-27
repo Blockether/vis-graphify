@@ -59,7 +59,7 @@ The agent uses these tools in its Python sandbox:
 | `graphify.shortest_path("a", "b")` | The shortest chain of edges between two nodes. |
 | `graphify.hubs(limit=20)` | The most called nodes. |
 | `graphify.affected("my.ns/run", within="src/api/")` | Every caller, importer and user, across all steps, with distance and file. `within` keeps only one folder or glob. `depth=2` stops after two steps. |
-| `graphify.references("my.ns/run")` | Every exact site of a symbol: file, line, column and role. |
+| `graphify.references("my.ns/run")` | Every exact site of a symbol: file, line, column and role. In a git work tree, it reads edited Clojure files without a graph update. A new or deleted file, or an edit in another language, still updates the graph first. |
 | `graphify.rename("my.ns/run", "start", apply=True)` | Renames the symbol everywhere and updates the graph. Without `apply`, it only returns the diff. |
 | `graphify.add_parameter("Total", "currency string", '"EUR"', apply=True)` | Adds a last parameter to the definition and the argument to every call. Without `apply`, it only returns the diff. |
 | `graphify.move("my.ns/run", "src/my/runner.clj", apply=True)` | Moves one top-level definition to another file, also a new one. Every use, import and require follows. |
