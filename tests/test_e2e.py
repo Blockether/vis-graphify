@@ -300,6 +300,71 @@ def test_real_references_update_the_graph_after_an_edit_outside_clojure(tmp_path
     assert graph.stat().st_mtime_ns > built
 
 
+def _updates(tools):
+    """Record the argv of each `graphify update` that `tools` runs."""
+    seen = []
+    run = tools._run
+
+    def recording(argv, **kwargs):
+        if "update" in argv:
+            seen.append(list(argv))
+        return run(argv, **kwargs)
+
+    tools._run = recording
+    return seen
+
+
+def test_real_graph_update_extracts_only_the_changed_files(tmp_path):
+    # Before this fix, each graph call after an edit ran a full, clustered `graphify update`.
+    tools, src, graph = _git_project(tmp_path)
+    seen = _updates(tools)
+    _edit(src / "db.clj", graph, (src / "db.clj").read_text() + "\n(defn close [c] c)\n")
+    assert tools.explain("demo.db/close").node.file == "src/demo/db.clj"
+    assert len(seen) == 1
+    assert "--no-cluster" in seen[0]
+    assert seen[0][seen[0].index("--changed") + 1] == str(src / "db.clj")
+    assert seen[0].count("--changed") == 1
+
+
+def test_real_graph_update_ends_for_an_edit_that_keeps_the_graph(tmp_path):
+    tools, src, graph = _git_project(tmp_path)
+    seen = _updates(tools)
+    (src / "db.clj").write_text((src / "db.clj").read_text() + ";; a note\n")
+    tools.explain("demo.db/connect")
+    tools.explain("demo.db/connect")
+    assert len(seen) == 1
+    assert not g.stale(g.load(tmp_path), tmp_path)
+
+
+def test_real_graph_update_keeps_an_edit_made_while_it_runs(tmp_path):
+    tools, src, graph = _git_project(tmp_path)
+    seen = _updates(tools)
+    run = tools._run
+
+    def edit_during_update(argv, **kwargs):
+        # The edit lands after the file scan and before graphify writes graph.json.
+        if not seen:
+            (src / "core.clj").write_text((src / "core.clj").read_text() + "\n(defn late [] 1)\n")
+        return run(argv, **kwargs)
+
+    tools._run = edit_during_update
+    (src / "db.clj").write_text((src / "db.clj").read_text() + "\n(defn close [c] c)\n")
+    tools.explain("demo.db/close")
+    assert tools.explain("demo.core/late").node.file == "src/demo/core.clj"
+    assert len(seen) == 2 and str(src / "core.clj") in seen[1]
+
+
+def test_real_rename_updates_only_the_written_files(tmp_path):
+    tools, src, graph = _git_project(tmp_path)
+    seen = _updates(tools)
+    done = tools.rename("demo.db/connect", "open-conn", apply=True, check=False)
+    assert done.applied and len(seen) == 1
+    changed = [seen[0][i + 1] for i, arg in enumerate(seen[0]) if arg == "--changed"]
+    assert changed == [str(src / "core.clj"), str(src / "db.clj")]
+    assert tools.explain("demo.db/open-conn").node.file == "src/demo/db.clj"
+    assert len(seen) == 1
+
+
 def test_real_rename_conflict_writes_nothing(tmp_path):
     tools, src = _rename_project(tmp_path)
     before = (src / "core.clj").read_text()

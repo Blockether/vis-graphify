@@ -137,7 +137,8 @@ def test_queries_build_a_missing_graph_and_update_a_stale_one(project):
     assert runner.calls == []
     os.utime(source, ns=(graph.stat().st_mtime_ns + 10**9,) * 2)
     tools.search("db")
-    assert runner.calls[-1][0][-2] == "update"
+    # Outside git, no file list names the changes: the whole project is updated, without clustering.
+    assert runner.calls[-1][0][-3:] == ["update", str(project), "--no-cluster"]
 
 
 def test_explain_limit_truncates(project):

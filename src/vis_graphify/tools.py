@@ -27,7 +27,7 @@ import warnings
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, Any, Callable
+from typing import Annotated, Any, Callable, Iterable
 from urllib.parse import urlsplit
 
 from vis_graphify import graph as g
@@ -539,6 +539,9 @@ def _within(file: str | None, scope: str) -> bool:
 
 
 _RAWS: dict[Path, tuple[g.Graph, dict]] = {}
+
+# Above this many changed files, such as after a branch checkout, one full update replaces the file list.
+_MAX_CHANGED = 500
 
 
 def _raw(graph: g.Graph) -> dict:
@@ -1266,13 +1269,19 @@ class GraphifyTools:
         cluster: bool = True,
         timeout_s: int = 1800,
         plugins: list[str] | None = None,
+        changed: Iterable[str] | None = None,
     ) -> BuildResult:
-        """Run `graphify update` on a resolved project root."""
+        """Run `graphify update` on a resolved project root.
+
+        With `changed`, graphify extracts only those files again, relative to the root, and keeps the rest.
+        """
         argv = graphify_command() + ["update", str(path)]
         if force:
             argv.append("--force")
         if not cluster:
             argv.append("--no-cluster")
+        for file in sorted(changed or ()):
+            argv += ["--changed", str(path / file)]
         started = time.monotonic()
         try:
             done = self._run(
@@ -1301,9 +1310,29 @@ class GraphifyTools:
         """The graph of a project. Builds it when it is missing, updates it when a source file changed."""
         if not g.graph_path(path).is_file():
             self._update(path)
-        elif g.stale(g.load(path), path):
-            self._update(path)
+        else:
+            self._refresh(path)
         return g.load(path)
+
+    def _refresh(self, path: Path) -> None:
+        """Bring an existing graph up to date with the files that changed after its build.
+
+        Git names the edited, added and deleted files, and graphify extracts only those again, without
+        clustering. Without git, or after a large checkout, the whole project is updated. Then the graph
+        gets the time before the file scan, so an edit during the update counts as a change next time.
+        The same stamp also ends a change that gives the same graph, which graphify does not write again.
+        """
+        graph = g.load(path)
+        if not g.stale(graph, path):
+            return
+        scanned = time.time_ns()
+        listed = _git_files(path)
+        delta = g.changes(graph, path, listed) if listed is not None else None
+        if delta is None or len(delta.edited | delta.added | delta.deleted) > _MAX_CHANGED:
+            self._update(path, cluster=False)
+        elif delta:
+            self._update(path, cluster=False, changed=delta.edited | delta.added | delta.deleted)
+        os.utime(g.graph_path(path), ns=(scanned, scanned))
 
     def status(self, root: str = ".") -> GraphStatus:
         """Report whether a project has a graph, and its size and age. Builds nothing.
@@ -1577,7 +1606,7 @@ class GraphifyTools:
         if apply and not plan.conflicts:
             refactor.apply_rename(plan)
             applied = True
-            self._update(path)
+            self._refresh(path)
             scope = {_relative(path, f) for f in plan.files}
             moved = g.moved_ids(graph, g.load(path), {}, {plan.old: new_name}, scope)
             told = self._kb_moves(path, moved)
@@ -1638,7 +1667,7 @@ class GraphifyTools:
             for file, data in new.items():
                 (path / file).write_bytes(data)
             applied = True
-            self._update(path)
+            self._refresh(path)
             checked = self._check(path, [_relative(path, str(file)) for file in new]) if check else ""
         return SignatureResult(
             node=_node(graph, node_id),
@@ -1724,7 +1753,7 @@ class GraphifyTools:
         if apply and not plan.conflicts:
             moves.apply_move(plan)
             applied = True
-            self._update(path)
+            self._refresh(path)
             moved = g.moved_ids(graph, g.load(path), *_move_maps(path, plan))
             told = self._kb_moves(path, moved)
             kept = [_relative(path, f) for f in plan.files if f not in plan.deleted]
