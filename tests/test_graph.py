@@ -9,14 +9,14 @@ from vis_graphify import graph as g
 def test_load_reuses_unchanged_graph_and_reloads_changed(project):
     first = g.load(project)
     assert g.load(project) is first
-    data = json.loads((project / "graphify-out/graph.json").read_text())
+    data = json.loads((project / ".graphify/graph.json").read_text())
     data["nodes"].append({"id": "new", "label": "new()"})
-    (project / "graphify-out/graph.json").write_text(json.dumps(data))
+    (project / ".graphify/graph.json").write_text(json.dumps(data))
     assert "new" in g.load(project).nodes
 
 
 def test_changes_finds_edited_added_and_deleted_files(tmp_path):
-    out = tmp_path / "graphify-out"
+    out = tmp_path / ".graphify"
     out.mkdir()
     nodes = [{"id": f, "label": f, "source_file": f} for f in ("a.clj", "b.clj", "gone.clj")]
     (out / "graph.json").write_text(json.dumps({"nodes": nodes, "links": []}))
@@ -63,9 +63,9 @@ def test_resolve_ambiguous_lists_candidates(project):
 
 
 def test_resolve_prefers_defined_node_over_external(project):
-    data = json.loads((project / "graphify-out/graph.json").read_text())
+    data = json.loads((project / ".graphify/graph.json").read_text())
     data["nodes"].append({"id": "connect_external", "label": "connect()"})
-    (project / "graphify-out/graph.json").write_text(json.dumps(data))
+    (project / ".graphify/graph.json").write_text(json.dumps(data))
     assert g.resolve(g.load(project), "connect()") == "src_app_db_connect"
 
 

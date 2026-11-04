@@ -52,7 +52,7 @@ The agent uses these tools in its Python sandbox:
 
 | Call | Result |
 |---|---|
-| `graphify.build(root=".")` | Creates or updates `<root>/graphify-out/graph.json`. Other calls do this for you when the graph is missing or a source file changed. |
+| `graphify.build(root=".")` | Creates or updates `<root>/.graphify/graph.json`. Other calls do this for you when the graph is missing or a source file changed. |
 | `graphify.status(root=".")` | Node, edge and file counts, and the build time. |
 | `graphify.search("gateway.*client")` | Code nodes whose label, id or file matches the regex, then the knowledge nodes and documents that match its words. |
 | `graphify.explain("my.ns/run")` | The node, what it calls and what calls or contains it, with the notes and documents about it. A knowledge node or a document works too. |
@@ -73,7 +73,7 @@ You can name a node by its id, its label (`run()`), its bare name (`run`) or a q
 node, the error lists each candidate id with its file and line.
 
 `print(result)` shows a short summary with `file:line` locations. Read a field, such as `diff`, for the details.
-The graph build writes `graphify-out/.gitignore`, so git and `grep` skip the graph files.
+The graph build writes `.graphify/.gitignore`, so git and `grep` skip the graph files.
 
 ## Rename a symbol
 
@@ -161,7 +161,7 @@ A cache per file makes a second call on a large project take milliseconds.
 
 `graphify.domain()` reads the framework registrations of your Clojure services and connects them.
 The built-in `edd-core` plugin reads [edd-core](https://github.com/alpha-prosoft/edd-core) commands,
-queries, events, effects and Malli schemas. The call writes these files to `<root>/graphify-out/domain/`:
+queries, events, effects and Malli schemas. The call writes these files to `<root>/.graphify/domain/`:
 
 - `DOMAIN.md`: a summary, findings, Mermaid flowcharts for the system and each service, a sequence
   diagram for each entry point, and the schemas;
@@ -194,9 +194,9 @@ always comes from the local tree-sitter graph, also in `affected`, `rename` and 
 
 A knowledge source is one of these:
 
-- `local`: the store of the project in `<root>/graphify-out/kb/`. This is the default.
+- `local`: the store of the project in `<root>/.graphify/kb/`. This is the default.
 - The folder or `graph.json` of another store on this machine, for example `../team-notes`.
-- A snapshot folder in `graphify-out/snapshots/`. See [Copy a knowledge source](#copy-a-knowledge-source).
+- A snapshot folder in `.graphify/snapshots/`. See [Copy a knowledge source](#copy-a-knowledge-source).
 - A server URL, for example `https://kb.example.com`. See
   [Use a hosted knowledge base](#use-a-hosted-knowledge-base).
 
@@ -218,7 +218,7 @@ print(graphify.ingest("docs/billing.pdf"))      # text mode: no model call
 print(graphify.ingest("notes.md", mode="llm"))  # the model adds nodes and edges
 print(graphify.validate())                      # ontology findings, errors first
 graphify.undo()                                 # revert the latest change of this session
-print(graphify.publish())                       # static graphify-out/kb.html
+print(graphify.publish())                       # static .graphify/kb.html
 ```
 
 - A batch in `write` is one change: if one operation fails, the store applies none of them.
@@ -242,11 +242,11 @@ A rename or a move gives a code node a new id. Your edits, edges and document li
 then go to the new id. `rename`, `move` and `move_file` do this after each written change:
 
 - `moved_nodes` lists each node with a new id, as `old id -> new id`.
-- The project store `graphify-out/kb/` gets the new ids through `graphify kb move`.
+- The project store `.graphify/kb/` gets the new ids through `graphify kb move`.
 - The [configured server](#save-the-server-in-settings) gets them too, over HTTP, unless it serves
   the project store. A snapshot gets nothing: the next `snapshot` copies the moved records.
 - `kb` has one line for each knowledge base, for example
-  `graphify-out/kb: 1 moved, 0 pending, 0 with no records at the old id`.
+  `.graphify/kb: 1 moved, 0 pending, 0 with no records at the old id`.
 
 A pending move waits until that graph has the new code, for example after its next rebuild. After a
 file move, graphify often finds the node by its file, label and class first. The links are then at
@@ -278,7 +278,7 @@ form, see [Save the server in Settings](#save-the-server-in-settings).
   follows a redirect to another host, so the token goes only to the server that you named.
 - Each session has its own tokens and its own undo history.
 - `ingest` sends the file content, so you can add files from your machine. `publish` first
-  copies the store of the server, then writes `graphify-out/kb-<host>-<port>.html` on your machine.
+  copies the store of the server, then writes `.graphify/kb-<host>-<port>.html` on your machine.
 
 #### Save the server in Settings
 
@@ -345,7 +345,7 @@ To host the server, keep it on loopback and put a TLS reverse proxy in front of 
 
 ```bash
 export GRAPHIFY_KB_TOKEN="$(openssl rand -hex 24)"  # at least 16 characters; keep it in a secret store
-graphify kb serve graphify-out/graph.json --allow-host kb.example.com
+graphify kb serve .graphify/graph.json --allow-host kb.example.com
 ```
 
 - The server listens on `127.0.0.1:7878`. Point the proxy for `kb.example.com` at that address.
@@ -358,12 +358,12 @@ graphify kb serve graphify-out/graph.json --allow-host kb.example.com
 
 ### Copy a knowledge source
 
-`graphify.snapshot(source)` copies a source into `graphify-out/snapshots/<name>/` of the project:
+`graphify.snapshot(source)` copies a source into `.graphify/snapshots/<name>/` of the project:
 the graph, the ontology, the knowledge records and the documents. Read the copy without the server,
 for example offline or to compare it with the server later.
 
 ```python
-snap = graphify.snapshot("https://kb.example.com")  # graphify-out/snapshots/kb.example.com
+snap = graphify.snapshot("https://kb.example.com")  # .graphify/snapshots/kb.example.com
 print(graphify.search("billing", source=snap.name))
 ```
 

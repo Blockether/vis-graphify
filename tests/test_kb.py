@@ -23,7 +23,7 @@ TOKEN = "kb-token-for-the-tests-0123"
 def _graph(place):
     """The graph.json of a project folder, or the graph file itself."""
     place = Path(place)
-    return place if place.suffix == ".json" else place / "graphify-out" / "graph.json"
+    return place if place.suffix == ".json" else place / ".graphify" / "graph.json"
 
 
 def _start(place, **options):
@@ -115,8 +115,8 @@ def hosted(project):
 def _other_project(project, tmp_path_factory):
     """Another project with a copy of the project graph."""
     other = tmp_path_factory.mktemp("other")
-    (other / "graphify-out").mkdir()
-    (other / "graphify-out" / "graph.json").write_text((project / "graphify-out" / "graph.json").read_text())
+    (other / ".graphify").mkdir()
+    (other / ".graphify" / "graph.json").write_text((project / ".graphify" / "graph.json").read_text())
     return other
 
 
@@ -270,15 +270,15 @@ def test_a_missing_loopback_server_points_to_the_local_store(project):
 
 def test_sources_resolve_local_stores_snapshots_and_servers(project, tmp_path_factory):
     tools = GraphifyTools(workspace_root=lambda: str(project))
-    local = (project / "graphify-out" / "graph.json").resolve()
-    for text in (None, "local", str(project), "graphify-out", "graphify-out/graph.json"):
+    local = (project / ".graphify" / "graph.json").resolve()
+    for text in (None, "local", str(project), ".graphify", ".graphify/graph.json"):
         source = tools._kb_source(text)
         assert (source.name, source.kind, source.graph) == ("local", "local", local), text
     other = _other_project(project, tmp_path_factory)
     store = tools._kb_source(str(other))
-    assert (store.kind, store.graph) == ("store", (other / "graphify-out" / "graph.json").resolve())
+    assert (store.kind, store.graph) == ("store", (other / ".graphify" / "graph.json").resolve())
     assert tools._kb_source(store.name).key == store.key == tools._kb_source(str(store.graph)).key
-    (other / "graphify-out" / "snapshot.json").write_text("{}")
+    (other / ".graphify" / "snapshot.json").write_text("{}")
     assert tools._kb_source(str(other)).kind == "snapshot"
     server = tools._kb_source("HTTPS://KB.example.com/team/")
     assert (server.name, server.kind, server.graph) == ("https://kb.example.com/team", "server", None)
@@ -289,7 +289,7 @@ def test_sources_resolve_local_stores_snapshots_and_servers(project, tmp_path_fa
 
 
 def test_code_graph_skips_knowledge_nodes(project):
-    graph_file = project / "graphify-out" / "graph.json"
+    graph_file = project / ".graphify" / "graph.json"
     data = json.loads(graph_file.read_text())
     data["nodes"].append({"id": "kb:billing", "label": "Billing", "_origin": "kb", "class": "concept"})
     data["links"] += [
@@ -317,7 +317,7 @@ def test_local_store_starts_its_server_on_first_use_and_keeps_it(project, spawne
     assert spawner.calls == []
     change = tools.write([{"op": "add_node", "label": "Billing", "class": "concept"}])
     ((argv, kwargs),) = spawner.calls
-    graph = project.resolve() / "graphify-out" / "graph.json"
+    graph = project.resolve() / ".graphify" / "graph.json"
     assert argv[-7:-2] == ["kb", "serve", str(graph), "--host", "127.0.0.1"] and argv[-2] == "--port"
     assert kwargs["start_new_session"] and kwargs["cwd"] == str(project.resolve())
     assert "GRAPHIFY_KB_TOKEN" not in kwargs["env"]
@@ -443,8 +443,8 @@ def test_the_real_graphify_serves_the_store_and_stops_after_a_restart(project):
     assert stopped.stopped and stopped.pid == started.pid and time.monotonic() - begun < 10
     assert not tools_module._kb_alive(started.pid)
     # The server saved its change before it stopped.
-    saved = "".join(path.read_text(errors="replace") for path in (project / "graphify-out").rglob("*.json"))
-    assert "Billing" in saved and not (project / "graphify-out" / "kb-serve.json").exists()
+    saved = "".join(path.read_text(errors="replace") for path in (project / ".graphify").rglob("*.json"))
+    assert "Billing" in saved and not (project / ".graphify" / "kb-serve.json").exists()
 
 
 # -- sessions -----------------------------------------------------------------------
@@ -746,7 +746,7 @@ def test_snapshot_copies_a_server_into_a_read_only_local_source(project, tmp_pat
             source=remote.url,
         )
         snap = tools.snapshot(remote.url)
-        name = f"graphify-out/snapshots/127.0.0.1-{remote.port}"
+        name = f".graphify/snapshots/127.0.0.1-{remote.port}"
         # The copy has the 6 code nodes, the concept and the node of the document.
         assert (snap.source, snap.name, snap.nodes, snap.documents, snap.assets) == (remote.url, name, 8, 1, 0)
         assert snap.version > 0 and Path(snap.path) == (project / name).resolve()
@@ -769,7 +769,7 @@ def test_snapshot_copies_a_server_into_a_read_only_local_source(project, tmp_pat
         again = tools.snapshot(remote.url)
         assert again.name == name and again.version > snap.version and again.nodes == 9
         assert tools.search("Invoices", source=name).knowledge and len(spawner.calls) == 1
-        assert not [p for p in (project / "graphify-out" / "snapshots").iterdir() if p.name.startswith(".")]
+        assert not [p for p in (project / ".graphify" / "snapshots").iterdir() if p.name.startswith(".")]
         # The remote server can go away: the copy still answers.
         _stop(remote)
         assert tools.search("Invoices", source=name).source == name
@@ -817,7 +817,7 @@ def test_publish_writes_the_page_of_the_local_store_with_its_unsaved_changes(pro
         tools = GraphifyTools(workspace_root=lambda: str(project), spawn=spawn)
         tools.write([{"op": "add_node", "label": "Unsaved idea", "class": "concept"}])
         published = tools.publish()
-        assert Path(published.path) == (project / "graphify-out" / "kb.html").resolve() and published.bytes > 1000
+        assert Path(published.path) == (project / ".graphify" / "kb.html").resolve() and published.bytes > 1000
         assert published.source == "local" and "Unsaved idea" in Path(published.path).read_text()
         with pytest.raises(ValueError, match="path must be an .html file name without folders"):
             tools.publish(path="../escape.html")
@@ -829,7 +829,7 @@ def test_publish_copies_a_server_first(served, project):
     tools, url = served
     tools.write([{"op": "add_node", "label": "Remote idea", "class": "concept"}], source=url)
     published = tools.publish(source=url)
-    page = project / "graphify-out" / f"kb-127.0.0.1-{url.rsplit(':', 1)[1]}.html"
+    page = project / ".graphify" / f"kb-127.0.0.1-{url.rsplit(':', 1)[1]}.html"
     assert Path(published.path) == page.resolve() and published.source == url and published.bytes > 1000
     assert "Remote idea" in page.read_text()
 
@@ -868,11 +868,9 @@ def test_moved_nodes_reach_the_project_store(project):
         workspace_root=lambda: str(project), runner=run, spawn=lambda *a, **k: pytest.fail("no spawn")
     )
     assert tools._kb_moves(project.resolve(), {"src_app_db_query": "src_app_db_fetch"}) == (
-        "graphify-out/kb: 1 moved, 0 pending, 0 with no records at the old id",
+        ".graphify/kb: 1 moved, 0 pending, 0 with no records at the old id",
     )
-    assert [argv[argv.index("--graph") + 1] for argv in runs] == [
-        str((project / "graphify-out" / "graph.json").resolve())
-    ]
+    assert [argv[argv.index("--graph") + 1] for argv in runs] == [str((project / ".graphify" / "graph.json").resolve())]
 
 
 def test_moved_nodes_skip_a_server_of_the_project_store(project, monkeypatch):
@@ -889,7 +887,7 @@ def test_moved_nodes_skip_a_server_of_the_project_store(project, monkeypatch):
         tools = GraphifyTools(workspace_root=lambda: str(project), runner=run)
         # The configured server serves this store, so only `graphify kb move` writes the moves.
         lines = tools._kb_moves(project.resolve(), {"src_app_db_query": "src_app_db_fetch"})
-        assert lines == ("graphify-out/kb: 1 moved, 0 pending, 0 with no records at the old id",) and len(runs) == 1
+        assert lines == (".graphify/kb: 1 moved, 0 pending, 0 with no records at the old id",) and len(runs) == 1
     finally:
         _stop(local)
 

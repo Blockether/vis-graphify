@@ -68,7 +68,7 @@ LINKS = [
 
 @pytest.fixture
 def project(tmp_path):
-    out = tmp_path / "graphify-out"
+    out = tmp_path / ".graphify"
     out.mkdir()
     (out / "graph.json").write_text(json.dumps({"directed": False, "nodes": NODES, "links": LINKS}))
     return tmp_path

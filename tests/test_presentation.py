@@ -85,7 +85,7 @@ def test_renderer_failure_and_start_show_arguments():
 def test_knowledge_states():
     from vis_graphify.kb import KBHit, KBServer, KBSnapshot
 
-    place = "graphify-out/snapshots/kb.example.com"
+    place = ".graphify/snapshots/kb.example.com"
     snap = KBSnapshot("https://kb.example.com", place, f"/p/{place}", 7, 9, 3, 1, 2, "2025-01-01T00:00:00Z")
     assert summary(presentation.snapshot(snap)) == (
         f"https://kb.example.com to {place}: 9 nodes, 3 edges, 1 document, 2 document files"
@@ -96,11 +96,11 @@ def test_knowledge_states():
     assert failed.summary == "failed" and f"source={place!r}" in texts and "is a snapshot" in texts
     # search: code and knowledge, knowledge alone, and the note of a source that did not answer.
     node = Node("a", "run()", "src/a.py", 3, "function", None)
-    hit = KBHit("document", "d1", "Billing notes", "", "graphify-out/kb/documents/d1/body.md", 2.5)
+    hit = KBHit("document", "d1", "Billing notes", "", ".graphify/kb/documents/d1/body.md", 2.5)
     both = presentation.search(SearchResult("bill", 1, (node,), knowledge=(hit,), source="local"))
     assert summary(both) == "1 code and 1 knowledge matches for 'bill'"
     assert [block.text for block in both.content[::2]] == ["Code", "Knowledge in local"]
-    assert both.content[3].rows == (("Billing notes", "document", "", "graphify-out/kb/documents/d1/body.md"),)
+    assert both.content[3].rows == (("Billing notes", "document", "", ".graphify/kb/documents/d1/body.md"),)
     assert summary(presentation.search(SearchResult("bill", 0, (), knowledge=(hit,), source="local"))) == (
         "1 knowledge match for 'bill'"
     )
@@ -288,7 +288,7 @@ def test_versions_agree():
 def _report(plugins=("edd-core",), findings=(), plugin_errors=()):
     return DomainReport(
         "/p",
-        "/p/graphify-out/domain/DOMAIN.md",
+        "/p/.graphify/domain/DOMAIN.md",
         "/p/d.json",
         plugins,
         ("orders-svc",),
@@ -379,7 +379,7 @@ def test_add_parameter_states(tools):
 
 
 def test_moves_show_the_knowledge_base():
-    told = ("graphify-out/kb: 1 moved, 0 pending, 0 with no records at the old id",)
+    told = (".graphify/kb: 1 moved, 0 pending, 0 with no records at the old id",)
     node = Node("app_util_slugify", "slugify()", "app/util.py", 4, "function", None)
     renamed = RenameResult(node, "slugify", "slug", True, ("app/util.py",), (), (), (), 0, "", kb=told)
     files = ("app/main.py", "app/text.py", "app/util.py")

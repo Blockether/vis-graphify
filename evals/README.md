@@ -95,7 +95,7 @@ With 0.3.3, all 18 trials pass. The sum of the mean tokens is 12% lower than van
 
 ## What the evals changed
 
-- 0.3.1 printed every text mention of a rename and the full build log. One Rust trial printed 160k characters because `grep` matched `graphify-out/graph.html`. 0.3.2 prints a short summary, keeps only code mentions in `mentions`, counts the rest in `text_mentions` and writes `graphify-out/.gitignore`.
+- 0.3.1 printed every text mention of a rename and the full build log. One Rust trial printed 160k characters because `grep` matched `.graphify/graph.html`. 0.3.2 prints a short summary, keeps only code mentions in `mentions`, counts the rest in `text_mentions` and writes `.graphify/.gitignore`.
 - Agents named symbols as `Order` (ambiguous) or `src/util.rs::checksum`. 0.3.2 lists each candidate with its location, and 0.3.3 accepts `file::name`.
 - Agents iterated over `graphify.search(...)`. 0.3.2 makes search, references and affected results iterable.
 - Agents called `graphify.build()` first, or got a stale graph after an edit. 0.4.0 builds a missing graph and updates a stale one in each query.

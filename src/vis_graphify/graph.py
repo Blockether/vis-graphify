@@ -12,7 +12,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-GRAPH_DIR = "graphify-out"
+GRAPH_DIR = ".graphify"
 GRAPH_FILE = "graph.json"
 KB_ORIGIN = "kb"
 """The `_origin` of the nodes and edges that the knowledge base adds. The code questions skip them."""

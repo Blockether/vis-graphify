@@ -593,7 +593,7 @@ def _site_suffixes(refactor: Any, node: dict) -> frozenset[str]:
 def _same_target(graph: g.Graph, root: Path, reference: str, node_id: str, edited: frozenset[str]) -> bool:
     """Whether `reference` still names the node after the edits of the files that spell its last name.
 
-    graphify extracts those files again into a temporary cache, so `graphify-out/` stays unchanged.
+    graphify extracts those files again into a temporary cache, so `.graphify/` stays unchanged.
     Their new nodes replace their old ones, and `reference` must then resolve to the same node.
     """
     name = re.split(r"::|[/.#:]", reference.strip().removesuffix("()"))[-1].lower().encode("utf-8")
@@ -706,7 +706,7 @@ KB_REGISTRY = "kb-serve.json"
 """The file in the output folder of a store that names the server that this extension started for it."""
 
 KB_SNAPSHOTS = "snapshots"
-"""The folder in `graphify-out/` that holds the snapshots of knowledge sources."""
+"""The folder in `.graphify/` that holds the snapshots of knowledge sources."""
 
 KB_SNAPSHOT_FILE = "snapshot.json"
 """The file in a snapshot folder that names the copied source and the time of the copy."""
@@ -764,7 +764,7 @@ def _kb_snapshot_name(source: _KBSource) -> str:
 
 
 def _kb_store_graph(root: Path, text: str) -> Path:
-    """The graph.json of a store path: a project folder, its graphify-out folder, a snapshot folder or a file."""
+    """The graph.json of a store path: a project folder, its .graphify folder, a snapshot folder or a file."""
     path = Path(text).expanduser()
     if not path.is_absolute():
         path = root / path
@@ -1091,11 +1091,15 @@ def _child_env() -> dict[str, str]:
     return env
 
 
+OUTPUT_IGNORE = "*\n!plugins/\n!plugins/**\n!providers.json\n__pycache__/\n"
+"""Ignore all graphify output, but not the committed config in `graphify.paths.PROJECT_CONFIG`."""
+
+
 def _ignore_output(out: Path) -> None:
-    """Keep graphify output out of git, grep and ls: add `.gitignore` with `*` unless one exists."""
+    """Keep graphify output out of git, grep and ls: add `.gitignore` unless one exists."""
     ignore = out / ".gitignore"
     if out.is_dir() and not ignore.exists():
-        ignore.write_text("*\n", encoding="utf-8")
+        ignore.write_text(OUTPUT_IGNORE, encoding="utf-8")
 
 
 def _tail(text: str, lines: int = 40) -> str:
@@ -1243,7 +1247,7 @@ class GraphifyTools:
     ) -> BuildResult:
         """Build or update the code graph of a project with graphify (AST only, no LLM).
 
-        Writes `<root>/graphify-out/graph.json` and `GRAPH_REPORT.md`, with a `.gitignore`
+        Writes `<root>/.graphify/graph.json` and `GRAPH_REPORT.md`, with a `.gitignore`
         that keeps them out of git and grep. A later build re-extracts only changed
         files. Supports Clojure, Python,
         JavaScript, TypeScript, Java, Go, Rust and the other graphify languages.
@@ -1582,7 +1586,7 @@ class GraphifyTools:
         counts them. A written rename updates the graph and, with `check`, runs the project
         check: `go vet`, `tsc --noEmit`, `cargo check`, `clj-kondo` or a Python syntax check.
         When a node gets a new id, its knowledge base records follow it, and `kb` reports
-        the outcome. The project store `graphify-out/kb/` gets the new ids, and so does the
+        the outcome. The project store `.graphify/kb/` gets the new ids, and so does the
         configured server in Settings or `$GRAPHIFY_KB_URL`.
 
         Args:
@@ -1784,7 +1788,7 @@ class GraphifyTools:
 
         Domain plugins read framework registrations, such as edd-core `reg-cmd`
         and `reg-event`, and follow the links across services. Writes
-        `<root>/graphify-out/domain/DOMAIN.md` (Mermaid diagrams, flows,
+        `<root>/.graphify/domain/DOMAIN.md` (Mermaid diagrams, flows,
         findings, schemas), `domain.json` and one JSON Schema for each Malli
         schema. Findings report, for example, calls to commands or queries
         that no service registers.
@@ -2169,7 +2173,7 @@ class GraphifyTools:
     def _kb_moves(self, path: Path, moved: dict[str, str]) -> tuple[str, ...]:
         """Send the new ids of moved nodes to the knowledge stores. One line for each, never an error.
 
-        The store of the project, `graphify-out/kb/`, gets them through `graphify kb move`. Its server sees
+        The store of the project, `.graphify/kb/`, gets them through `graphify kb move`. Its server sees
         them too: each write of a store first loads the writes of other processes. The configured server gets
         them as well, unless it serves the project store. A snapshot is a copy, so it gets nothing: the next
         snapshot copies the moved records.
@@ -2388,7 +2392,7 @@ class GraphifyTools:
     def snapshot(
         self, source: str | None = None, name: str | None = None, assets: bool = False, timeout_s: float = 600.0
     ) -> kb.KBSnapshot:
-        """Copy a knowledge source into `graphify-out/snapshots/<name>/` of the workspace root.
+        """Copy a knowledge source into `.graphify/snapshots/<name>/` of the workspace root.
 
         The copy holds the graph, the ontology, the knowledge records and the documents. Give its folder as
         `source` to read it without the server. A snapshot is read-only. A new snapshot with the same name
@@ -2570,7 +2574,7 @@ class GraphifyTools:
         """Write a static HTML view of a knowledge source on this machine. It opens without a server.
 
         A store gets the page in its own output folder. A server first sends a copy of its store, and the
-        page goes into `graphify-out/` of the workspace root.
+        page goes into `.graphify/` of the workspace root.
 
         Args:
             source: `local`, a store or snapshot path, or a server URL. None uses the configured server, else `local`.

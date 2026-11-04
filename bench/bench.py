@@ -29,7 +29,7 @@ from vis_graphify import graph as g  # noqa: E402
 from vis_graphify import tools as t  # noqa: E402
 
 IGNORED = shutil.ignore_patterns(
-    ".git", "graphify-out", "target", ".cpcache", "node_modules", ".clj-kondo", ".lsp", ".venv", ".graphify*"
+    ".git", ".graphify", "target", ".cpcache", "node_modules", ".clj-kondo", ".lsp", ".venv", ".graphify*"
 )
 EDGE_RELATIONS = {"calls", "references"}
 DEF_KINDS = {"var"}

@@ -13,6 +13,7 @@ from vis_graphify.tools import (
     RenameEdit,
     RenameResult,
     _child_env,
+    _ignore_output,
     _kb_has_knowledge,
     graphify_command,
 )
@@ -45,7 +46,29 @@ def test_build_runs_graphify_update_and_counts(project):
     assert "PYTHONPATH" not in kwargs["env"]
     assert (result.nodes, result.edges) == (6, 4)
     assert str(result) == "Graph built: 6 nodes, 4 edges in %g s." % result.seconds
-    assert (project / "graphify-out" / ".gitignore").read_text() == "*\n"
+    assert (project / ".graphify" / ".gitignore").is_file()
+
+
+def test_output_ignore_keeps_committed_project_config_visible(tmp_path):
+    """.graphify/ holds graphify output and committed config (plugins/, providers.json).
+    Git ignores the output and still tracks the config."""
+
+    def git(*args):
+        return subprocess.run(["git", "-C", str(tmp_path), *args], capture_output=True, text=True)
+
+    git("init", "-q")
+    out = tmp_path / ".graphify"
+    (out / "plugins").mkdir(parents=True)
+    for name in ("graph.json", "providers.json", "plugins/reg.py", "plugins/__pycache__/reg.pyc", "cache/ast/x.json"):
+        (out / name).parent.mkdir(parents=True, exist_ok=True)
+        (out / name).write_text("{}", encoding="utf-8")
+    _ignore_output(out)
+    ignored = {
+        p
+        for p in ("graph.json", "cache/ast/x.json", "providers.json", "plugins/reg.py", "plugins/__pycache__/reg.pyc")
+        if git("check-ignore", "-q", f".graphify/{p}").returncode == 0
+    }
+    assert ignored == {"graph.json", "cache/ast/x.json", "plugins/__pycache__/reg.pyc"}
 
 
 def test_rename_text_is_short():
@@ -128,7 +151,7 @@ def test_result_text_is_one_line_per_row(project):
 def test_queries_build_a_missing_graph_and_update_a_stale_one(project):
     runner = FakeRunner()
     tools = tools_for(project, runner)
-    graph = project / "graphify-out" / "graph.json"
+    graph = project / ".graphify" / "graph.json"
     source = project / "src" / "app" / "db.clj"
     source.parent.mkdir(parents=True, exist_ok=True)
     source.write_text("(ns app.db)\n")
@@ -152,8 +175,8 @@ def test_graphify_command_finds_an_interpreter():
 
 DOMAIN_JSON = {
     "root": "/p",
-    "markdown": "/p/graphify-out/domain/DOMAIN.md",
-    "json": "/p/graphify-out/domain/domain.json",
+    "markdown": "/p/.graphify/domain/DOMAIN.md",
+    "json": "/p/.graphify/domain/domain.json",
     "plugins": ["edd-core"],
     "services": ["inventory-svc", "orders-svc"],
     "counts": {"command": 2, "event": 2},
@@ -251,13 +274,13 @@ def _store(root, name="store.sqlite"):
 
     `store.json` names another store backend, and `overlay.json` is the import of an older graphify.
     """
-    (root / "graphify-out" / "kb").mkdir()
-    (root / "graphify-out" / "kb" / name).write_text("{}")
+    (root / ".graphify" / "kb").mkdir()
+    (root / ".graphify" / "kb" / name).write_text("{}")
 
 
 @pytest.mark.parametrize("name", ["store.sqlite", "store.json", "overlay.json"])
 def test_a_saved_store_has_knowledge(project, name):
-    graph = project.resolve() / "graphify-out" / "graph.json"
+    graph = project.resolve() / ".graphify" / "graph.json"
     assert not _kb_has_knowledge(graph)
     _store(project.resolve(), name)
     assert _kb_has_knowledge(graph)
@@ -274,9 +297,9 @@ def test_moved_nodes_go_to_the_project_store(project, monkeypatch):
     _store(root)
     runner = FakeRunner(stdout=json.dumps([{"status": "moved"}, {"status": "skipped"}]))
     lines = tools_for(root, runner)._kb_moves(root, {"src_app_db_query": "src_app_db_fetch", "lonely": "alone"})
-    assert lines == ("graphify-out/kb: 1 moved, 0 pending, 1 with no records at the old id",)
+    assert lines == (".graphify/kb: 1 moved, 0 pending, 1 with no records at the old id",)
     argv, kwargs = runner.calls[0]
-    graph = str(root / "graphify-out" / "graph.json")
+    graph = str(root / ".graphify" / "graph.json")
     assert argv[-9:] == [
         "kb",
         "move",
@@ -317,7 +340,7 @@ def test_moved_nodes_report_a_store_failure(project, monkeypatch, runner, error)
     root = project.resolve()
     _store(root)
     lines = tools_for(root, runner)._kb_moves(root, {"src_app_db_query": "src_app_db_fetch"})
-    assert lines == (f"graphify-out/kb: not updated: {error}",)
+    assert lines == (f".graphify/kb: not updated: {error}",)
 
 
 def test_moved_nodes_report_the_moves_before_a_failure(project, monkeypatch):
@@ -336,7 +359,7 @@ def test_moved_nodes_report_the_moves_before_a_failure(project, monkeypatch):
     lines = tools_for(root, run)._kb_moves(root, {"lonely": "alone", "src_app_db_query": "src_app_db_fetch"})
     assert len(calls) == 2
     assert lines == (
-        "graphify-out/kb: 1 moved, 0 pending, 0 with no records at the old id, then not updated: error: graph.json is missing",
+        ".graphify/kb: 1 moved, 0 pending, 0 with no records at the old id, then not updated: error: graph.json is missing",
     )
 
 

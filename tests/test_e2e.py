@@ -139,9 +139,9 @@ def test_real_edd_core_domain_report(tmp_path):
     assert report.errors == 1 and report.schemas >= 1
     (missing,) = [f for f in report.findings if f.severity == "error"]
     assert (missing.code, missing.element) == ("missing-command", "command:inventory-svc:release-stok")
-    markdown = (tmp_path / "graphify-out/domain/DOMAIN.md").read_text()
+    markdown = (tmp_path / ".graphify/domain/DOMAIN.md").read_text()
     assert "```mermaid" in markdown and "release-stok" in markdown
-    assert list((tmp_path / "graphify-out/domain/schemas").rglob("*.json"))
+    assert list((tmp_path / ".graphify/domain/schemas").rglob("*.json"))
 
 
 def test_real_build_adds_domain_nodes(tmp_path):
@@ -245,7 +245,7 @@ def _git_project(tmp_path):
     """`_rename_project` in a git work tree, where `references` can skip the graph update."""
     tools, src = _rename_project(tmp_path)
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
-    return tools, src, tmp_path / "graphify-out" / "graph.json"
+    return tools, src, tmp_path / ".graphify" / "graph.json"
 
 
 def _edit(path, graph, text):
@@ -293,7 +293,7 @@ def test_real_references_update_the_graph_after_an_edit_outside_clojure(tmp_path
     tools = GraphifyTools(workspace_root=lambda: str(tmp_path))
     assert tools.build(cluster=False, timeout_s=600).nodes
     subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
-    graph = tmp_path / "graphify-out" / "graph.json"
+    graph = tmp_path / ".graphify" / "graph.json"
     built = graph.stat().st_mtime_ns
     _edit(tmp_path / "main.py", graph, "from util import helper\n\nhelper(1)\n")
     assert ("main.py", 3, "use") in [(ref.file, ref.line, ref.role) for ref in tools.references("helper()").references]
@@ -454,7 +454,7 @@ def _note(root, node_id):
     """Link a knowledge base document of the project store to `node_id`."""
     from graphify.kb import KnowledgeBase
 
-    knowledge = KnowledgeBase(root / "graphify-out" / "graph.json")
+    knowledge = KnowledgeBase(root / ".graphify" / "graph.json")
     note = {"op": "add_document", "title": "Notes", "body": "Uses the pool.", "nodes": [node_id]}
     knowledge.batch([note], actor="tester")
     knowledge.flush()
@@ -464,7 +464,7 @@ def _linked(root):
     """The node ids that the document of `_note` links."""
     from graphify.kb import KnowledgeBase
 
-    return KnowledgeBase(root / "graphify-out" / "graph.json", create=False).get_document("notes")["nodes"]
+    return KnowledgeBase(root / ".graphify" / "graph.json", create=False).get_document("notes")["nodes"]
 
 
 def test_real_move_definition_in_python_and_typescript(tmp_path):
@@ -492,7 +492,7 @@ def test_real_move_definition_in_python_and_typescript(tmp_path):
     assert "from app.text import slugify" in (tmp_path / "app/main.py").read_text(encoding="utf-8")
     # The knowledge base document follows the new node id.
     assert done.moved_nodes == ("app_util_slugify -> app_text_slugify",) and _linked(tmp_path) == ["app_text_slugify"]
-    assert done.kb == ("graphify-out/kb: 1 moved, 0 pending, 0 with no records at the old id",)
+    assert done.kb == (".graphify/kb: 1 moved, 0 pending, 0 with no records at the old id",)
     moved = tools.move("formatName()", "web/names.ts", apply=True)
     assert moved.applied and "web/names.ts" in moved.created
     assert "from './names'" in (tmp_path / "web/main.ts").read_text(encoding="utf-8")
@@ -534,7 +534,7 @@ def test_real_rename_and_move_file_keep_knowledge_base_links(tmp_path):
     _note(tmp_path, "src_demo_db_connect")
     renamed = tools.rename("demo.db/connect", "open-conn", apply=True, check=False)
     assert renamed.moved_nodes == ("src_demo_db_connect -> src_demo_db_open_conn",)
-    assert renamed.kb == ("graphify-out/kb: 1 moved, 0 pending, 0 with no records at the old id",)
+    assert renamed.kb == (".graphify/kb: 1 moved, 0 pending, 0 with no records at the old id",)
     assert _linked(tmp_path) == ["src_demo_db_open_conn"]
     moved = tools.move_file("src/demo/db.clj", "src/demo/store.clj", apply=True, check=False)
     assert "src_demo_db_open_conn -> src_demo_store_open_conn" in moved.moved_nodes and moved.kb
