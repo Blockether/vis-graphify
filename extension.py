@@ -209,7 +209,7 @@ def _ask_kb_token(url: str, check) -> str | None:
     """Ask the person for the token of a knowledge base server in a masked form."""
     answer = vis.ask(
         "Knowledge base token",
-        [vis.password("token", label="Token", description=f"The token of {url}.", is_required=True, validate=check)],
+        [vis.ui.password("token", label="Token", description=f"The token of {url}.", is_required=True, validate=check)],
         description="The token stays out of the conversation, the logs and the model.",
         submit_label="Connect",
     )
