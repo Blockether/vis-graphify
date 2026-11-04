@@ -766,12 +766,13 @@ wheels = [
 
 [[package]]
 name = "graphifyy"
-version = "0.9.93+blockether.22"
-source = { git = "https://github.com/Blockether/graphify?rev=v0.9.93-blockether.22#63a0e135c865012d8b240b83fce3d8178e5314e6" }
+version = "0.9.102+blockether.1"
+source = { git = "https://github.com/Blockether/graphify?rev=v0.9.102-blockether.1#d0236aea209924daa6140d7c8bcd7a719aeba3d1" }
 dependencies = [
     { name = "networkx" },
     { name = "numpy" },
     { name = "orjson", marker = "platform_python_implementation == 'CPython'" },
+    { name = "pyyaml" },
     { name = "rapidfuzz" },
     { name = "tree-sitter" },
     { name = "tree-sitter-bash" },
@@ -3409,7 +3410,7 @@ wheels = [
 
 [[package]]
 name = "vis-graphify"
-version = "0.18.0"
+version = "0.18.1"
 source = { virtual = "." }
 dependencies = [
     { name = "graphifyy", extra = ["office", "pdf"] },
@@ -3419,7 +3420,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "graphifyy", extras = ["pdf", "office"], git = "https://github.com/Blockether/graphify?rev=v0.9.93-blockether.22" },
+    { name = "graphifyy", extras = ["pdf", "office"], git = "https://github.com/Blockether/graphify?rev=v0.9.102-blockether.1" },
     { name = "graspologic-native", specifier = ">=1.3.1,<2" },
     { name = "vis-agent", specifier = ">=0.5.2" },
 ]
