@@ -1,0 +1,165 @@
+# Code graph reference
+
+## When to use
+
+Use this reference to identify nodes, trace calls, or check the effect of a code change.
+To change definitions or files, see [Rename a symbol](#rename-a-symbol),
+[Add a parameter](#add-a-parameter), and [Move code](#move-code).
+To record knowledge next to the code, see the [knowledge base guide](knowledge-base.md).
+
+The [Blockether fork of graphify](https://github.com/Blockether/graphify) uses the
+[Blockether Clojure grammar](https://github.com/Blockether/tree-sitter-clojure).
+The grammar supports namespaces, vars, `:require` aliases, calls across files, protocols,
+records, and Clojure 1.12 and 1.13 syntax.
+Vis prepares a private environment with graphify and this grammar when you install the extension.
+
+## Code tools
+
+In a Vis session, ask for the graph work in chat, for example "who calls `run-tests` in this project?".
+The agent uses these tools in its Python sandbox:
+
+| Call | Result |
+|---|---|
+| `graphify.build(root=".")` | Creates or updates `<root>/.graphify/graph.json`. Other calls do this for you when the graph is missing or a source file changed. |
+| `graphify.status(root=".")` | Node, edge and file counts, and the build time. |
+| `graphify.search("gateway.*client")` | Code nodes whose label, id or file matches the regex, then the knowledge nodes and documents that match its words. |
+| `graphify.explain("my.ns/run")` | The node, what it calls and what calls or contains it, with the notes and documents about it. A knowledge node or a document works too. |
+| `graphify.shortest_path("a", "b")` | The shortest chain of edges between two nodes. |
+| `graphify.hubs(limit=20)` | The most called nodes. |
+| `graphify.affected("my.ns/run", within="src/api/")` | Every caller, importer and user, across all steps, with distance and file. `within` keeps only one folder or glob. `depth=2` stops after two steps. |
+| `graphify.references("my.ns/run")` | Every exact site of a symbol: file, line, column and role. In a git work tree, it reads edited Clojure files without a graph update. A new or deleted file, or an edit in another language, still updates the graph first. |
+| `graphify.rename("my.ns/run", "start", apply=True)` | Renames the symbol everywhere and updates the graph. Without `apply`, it only returns the diff. |
+| `graphify.add_parameter("Total", "currency string", '"EUR"', apply=True)` | Adds a last parameter to the definition and the argument to every call. Without `apply`, it only returns the diff. |
+| `graphify.move("my.ns/run", "src/my/runner.clj", apply=True)` | Moves one top-level definition to another file, also a new one. Every use, import and require follows. |
+| `graphify.move_file("src/my/ns.clj", "src/my/core.clj", apply=True)` | Moves a file and renames its module or namespace at every use. For Clojure, the test namespace moves too. |
+| `graphify.domain(root=".")` | The domain model: services, commands, queries, events, links, schemas and findings. Writes `DOMAIN.md`. |
+| `graphify.crap(changed=True)` | CRAP scores of Clojure and Python functions: complexity and test coverage, the worst first. |
+
+You can name a node by its id, its label (`run()`), its bare name (`run`) or a qualified name
+(`my.ns/run`, `orders.Order`, `Ledger.post` or `crate::util::sum`), or by its file and name
+(`src/util.rs::checksum`). If a name matches more than one
+node, the error lists each candidate id with its file and line.
+
+`print(result)` shows a short summary with `file:line` locations. Read a field, such as `diff`, for the details.
+The graph build writes `.graphify/.gitignore`, so git and `grep` skip the graph files.
+
+## Rename a symbol
+
+Ask in chat, for example "rename `parse_config` to `load_config`". The agent calls
+`graphify.rename("parse_config()", "load_config", apply=True)`. When the rename has a conflict,
+the call writes nothing. The result has these fields:
+
+- `diff`: the change in each file;
+- `conflicts`: why the rename is unsafe, if it is. Examples are a file that already uses the new
+  name, a method that overrides a base class or implements a trait, or a common method name such as
+  `get` on receivers of unknown type;
+- `mentions`: other code symbols that spell the old name. They stay unchanged; check them.
+- `text_mentions`: the count of strings, comments and keywords that spell the old name. They stay unchanged.
+- `moved_nodes` and `kb`: the graph nodes with a new id, and the knowledge bases that got the new
+  ids. See [Keep knowledge base links after a rename or a move](knowledge-base.md#keep-knowledge-base-links-after-a-rename-or-a-move).
+
+Without `apply=True`, the call is a preview and writes nothing. A file that changed after the plan stops the write.
+
+The rename works in every language with a tree-sitter grammar in graphify: Python, JavaScript,
+TypeScript, Go, Rust, Java, C#, Kotlin, Ruby, PHP, Clojure and more. It follows imports, aliases,
+re-exports and declared receiver types, and it skips parameters, locals and fields with the same name.
+For Clojure, it follows `:as`, `:refer`, `:refer :all` and `:rename`, and changes `declare`,
+`defmethod`, protocol implementations, `#'var`, `resolve`, syntax-quote and `->Rec` factories.
+`graphify.references()` lists the same sites without a change.
+
+## Add a parameter
+
+Ask in chat, for example "add a `currency string` parameter to `pricing.Total` and pass `"EUR"`".
+The agent calls `graphify.add_parameter("pricing/pricing.go::Total", "currency string", '"EUR"', apply=True)`.
+The call finds the calls with the same exact resolution as `graphify.references()`. A method or a
+function in another package with the same name stays unchanged.
+
+- Write the parameter as the language writes it: `currency string` (Go), `currency: str` (Python),
+  `currency: string` (TypeScript) or `currency` (Clojure).
+- The parameter goes last in the definition, and the argument goes last in each call.
+- A multi-line call with a trailing comma gets the argument on its own line.
+
+The call writes nothing when a site blocks the change. Examples are a function that is passed as a
+value, not called, or a Python list that ends with `*args`, `**kwargs` or a default. In Python, pass
+`name=value` after a default. Then change the blocked sites by hand.
+
+## Move code
+
+Ask in chat, for example "move `slugify` from `app.util` to a new file `app/text.py`". The agent
+calls `graphify.move("app/util.py::slugify", "app/text.py", apply=True)`. To move a whole file, the
+agent calls `graphify.move_file("src/app/util.clj", "src/app/text/core.clj", apply=True)`.
+
+- The move works for Clojure, Python, JavaScript, TypeScript, Go and Rust. It also works for Java,
+  Kotlin, Scala, Groovy, C#, VB.NET, PHP, Swift, Elixir, Fortran, Erlang, OCaml, Pascal and Apex.
+  The languages that load files by path work too: C, C++, Objective-C, Ruby, shell, PowerShell,
+  Julia, Verilog, Lua, Zig, R, SQL, Common Lisp, Robot Framework, COBOL, Dart, Solidity, Terraform
+  and others.
+- Every import, require, `mod` declaration and qualified use follows the code.
+- The moved definition takes the imports that it needs.
+- For Clojure, `move_file` changes the `ns` form. It also moves the test namespace `x-test` of
+  namespace `x`. Give `tests=False` to keep the tests in place.
+- For Rust, `impl` blocks move with their type. A private item that the new module needs becomes
+  `pub(crate)`. `notes` lists these changes.
+
+The result has `diff`, `created`, `deleted`, `renames`, `notes`, `conflicts`, `moved_nodes` and
+`kb`, as for [a rename](knowledge-base.md#keep-knowledge-base-links-after-a-rename-or-a-move). The call writes
+nothing when a conflict blocks the move. Examples are a name that the target file already defines,
+a target file that exists, or an import cycle. Without `apply=True`, the call is a preview. A
+written move updates the graph and runs the project check, as `rename` does.
+
+## Risky functions
+
+`graphify.crap()` gives each Clojure and Python function a CRAP score: `CC² × (1 − coverage)³ + CC`.
+CC is the cyclomatic complexity. A fully tested function scores its complexity. A score above 10
+means that the function needs tests or a split.
+
+1. Run your tests with coverage: `clj.run_tests(coverage=True)` or `py.run_tests(coverage=True)`.
+   The Clojure run uses Lazytest with Clofidence and writes `target/coverage/clofidence.json`.
+   The Python run uses coverage.py and writes `coverage.json`. Both results list the gaps:
+   the code and the branches that never ran.
+2. Call `print(graphify.crap())`, or `graphify.crap(changed=True)` for the functions that you
+   changed since `HEAD`.
+
+The result lists the worst functions first. `over` counts the scores above `threshold`, and
+`is_passed` is true when there are none. A function without coverage data is ranked by its
+complexity. `stale_reports` names reports that are older than the code: run the tests again.
+A cache per file makes a second call on a large project take milliseconds.
+
+## Domain flows
+
+`graphify.domain()` reads the framework registrations of your Clojure services and connects them.
+The built-in `edd-core` plugin reads [edd-core](https://github.com/alpha-prosoft/edd-core) commands,
+queries, events, effects and Malli schemas. The call writes these files to `<root>/.graphify/domain/`:
+
+- `DOMAIN.md`: a summary, findings, Mermaid flowcharts for the system and each service, a sequence
+  diagram for each entry point, and the schemas;
+- `domain.json`: the full model;
+- `schemas/`: one JSON Schema for each Malli schema.
+
+The result lists the findings, errors first. For example, `missing-command` means that code calls a
+command that the target service does not register. `payload-invalid` means that a call sends data
+that the full `:consumes` schema of its target rejects. Codes that start with `schema-` mark a broken
+Malli schema, such as an unknown type, `:min` above `:max` or a regex that cannot compile. `DOMAIN.md`
+lists these problems under each schema. `graphify.build()` also adds the domain elements
+to the graph, so `graphify.explain("domain:command:orders-svc:place-order")` shows the handler.
+
+To read another framework, write a domain plugin: a Python file with a `plugin` object that has a
+`name` and an `extract(corpus, model)` method. The
+[plugin guide](https://github.com/Blockether/graphify/blob/v8/docs/domain.md#write-a-plugin)
+describes the contract. Make the plugin available in one of these ways:
+
+- Put the file in `<root>/.graphify/plugins/`. graphify finds it for that project.
+- Pass its path or name in `plugins`, for example `graphify.domain(plugins=["tools/jobs.py"])`.
+- Add it to `src/vis_graphify/domain_plugins/` in this repository. Every Vis user of the
+  extension then gets it.
+
+## Benchmark
+
+[`bench/`](../bench/README.md) measures extraction, queries and change tracking on real Clojure
+projects against clj-kondo. On the Vis sources (235 files), definitions have a recall of 0.999,
+references a recall of 0.996, and `explain()` finds 99.8 percent of the callers in a few milliseconds.
+A full build takes about 4 s, and an update after a one-file change about 5 s.
+
+## License
+
+The extension uses the [Apache License 2.0](../LICENSE). Graphify uses the MIT license. See [NOTICE](../NOTICE).
